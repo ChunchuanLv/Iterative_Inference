@@ -17,7 +17,9 @@
         "type": "full_var_biaffine_parser",
         "arc_representation_dim": 500,
         "var0": 100,
+        "drop_pos": 0.3,
         "dropout": 0.0,
+        "auto_enc":false,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
             "hidden_size": 400,
@@ -82,7 +84,7 @@
             "sparse": true,
             "vocab_namespace": "pos"
         },
-        "tag_representation_dim": 100,
+        "tag_representation_dim": 200,
         "text_field_embedder": {
             "tokens": {
                 "type": "embedding",
@@ -99,7 +101,7 @@
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
     "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 1,
+        "cuda_device": 3,
         "grad_norm": 5,
         "num_epochs": 80,
         "optimizer": {
