@@ -14,10 +14,10 @@
         ]
     },
     "model": {
-        "type": "var_biaffine_parser",
+        "type": "full_var_biaffine_parser",
         "arc_representation_dim": 500,
-        "var0": 10000,
-        "dropout": 0.3,
+        "var0": 100,
+        "dropout": 0.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
             "hidden_size": 400,
@@ -99,7 +99,7 @@
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
     "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 3,
+        "cuda_device": 1,
         "grad_norm": 5,
         "num_epochs": 80,
         "optimizer": {
