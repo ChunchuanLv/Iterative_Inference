@@ -96,6 +96,7 @@
     "train_data_path": "/disk/scratch/s1544871/ptb/train.gold.conll",
     "validation_data_path": "/disk/scratch/s1544871/ptb/dev.gold.conll",
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
+    "evaluate_on_test": true,
     "trainer": {
         "cuda_device": 2,
         "grad_norm": 5,
