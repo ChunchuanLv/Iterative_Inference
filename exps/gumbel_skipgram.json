@@ -17,10 +17,15 @@
         "type": "gumbel_biaffine_parser",
         "arc_representation_dim": 500,
         "dropout": 0.3,
+        "iterations": 10,
+        "latent_t": 10,
+        "refine_lr":1e-1,
+        "refine_with_mst": false,
+        "refine_train":false,
         "gumbel_head_t": 1.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
-            "hidden_size": 400,
+            "hidden_size": 500,
             "input_size": 200,
             "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
@@ -82,7 +87,7 @@
             "sparse": true,
             "vocab_namespace": "pos"
         },
-        "tag_representation_dim": 100,
+        "tag_representation_dim": 200,
         "text_field_embedder": {
             "tokens": {
                 "type": "embedding",
@@ -101,7 +106,7 @@
     "trainer": {
         "cuda_device": 1,
         "grad_norm": 5,
-        "num_epochs": 80,
+        "num_epochs": 100,
         "optimizer": {
             "type": "dense_sparse_adam",
             "betas": [

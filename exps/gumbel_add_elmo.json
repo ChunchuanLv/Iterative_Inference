@@ -1,7 +1,16 @@
 {
     "dataset_reader": {
         "type": "universal_dependencies",
-        "use_language_specific_pos": true
+        "use_language_specific_pos": true,
+          "token_indexers": {
+              "tokens": {
+                  "type": "single_id",
+                  "lowercase_tokens": true
+              },
+              "elmo": {
+                  "type": "elmo_characters"
+              }
+          }
     },
     "iterator": {
         "type": "bucket",
@@ -14,17 +23,19 @@
         ]
     },
     "model": {
-        "type": "full_var_biaffine_parser",
+        "type": "gumbel_biaffine_parser",
         "arc_representation_dim": 500,
-        "var0": 100,
         "dropout": 0.3,
-        "auto_enc":true,
-        "negative_sampling":0.01,
+        "iterations": 0,
+        "latent_t": 10,
+        "refine_lr":1e-1,
+        "refine_with_mst": false,
+        "refine_train":false,
         "gumbel_head_t": 1.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
             "hidden_size": 500,
-            "input_size": 200,
+            "input_size": 1224,
             "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
@@ -93,7 +104,14 @@
                 "pretrained_file": "/disk/scratch/s1544871/sskip.eng.100.gz",
                 "sparse": true,
                 "trainable": true
-            }
+            },
+          "elmo": {
+            "type": "elmo_token_embedder",
+            "options_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_options.json",
+            "weight_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+            "do_layer_norm": false,
+            "dropout": 0.5
+          }
         },
         "use_mst_decoding_for_validation": true
     },
@@ -102,9 +120,9 @@
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
     "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 1,
+        "cuda_device": 2,
         "grad_norm": 5,
-        "num_epochs": 180,
+        "num_epochs": 100,
         "optimizer": {
             "type": "dense_sparse_adam",
             "betas": [
@@ -113,6 +131,7 @@
             ]
         },
         "patience": 50,
-        "validation_metric": "+LAS"
+        "validation_metric": "+LAS",
+        "num_serialized_models_to_keep":-1
     }
 }

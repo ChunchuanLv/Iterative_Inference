@@ -87,7 +87,7 @@ class FullVariationalBiaffineDependencyParser(Model):
                  arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
                  use_mst_decoding_for_validation: bool = True,
-                 negative_sampling:bool = False,
+                 negative_sampling:float = 0.0,
                  gumbel_head_t: float = 0,
                  dropout: float = 0.0,
                  input_dropout: float = 0.0,
@@ -284,14 +284,6 @@ class FullVariationalBiaffineDependencyParser(Model):
         child_tag_representation_logvar = self.child_tag_feedforward_logvar(encoded_text)
         child_tag_representation  = self.reparameterize(child_tag_representation_mu, child_tag_representation_logvar)
         prior_pos_scores,prior_auto_enc = None,None
-        if self.training and self.negative_sampling:
-            head_arc_representation_prior, child_arc_representation_prior, head_tag_representation_prior, child_tag_representation_prior \
-                = [self.sample_prior(mu) for mu in [head_arc_representation_mu,child_arc_representation_mu,head_tag_representation_mu,child_tag_representation_mu]]
-            prior_rep = torch.cat([head_arc_representation_prior, child_arc_representation_prior, head_tag_representation_prior, child_tag_representation_prior],dim=2)
-            prior_pos_scores =  self.pos_score(prior_rep)
-            if self.auto_enc:
-                prior_auto_enc = self.auto_regre(prior_rep)
-
         node_rep = torch.cat([head_arc_representation,child_arc_representation,head_tag_representation,child_tag_representation],dim=2)
         # shape (batch_size, sequence_length, n_pos)
         pos_scores = self.pos_score(node_rep)
@@ -300,6 +292,14 @@ class FullVariationalBiaffineDependencyParser(Model):
             auto_enc = self.auto_regre(node_rep)
         else:
             auto_enc = None
+
+        if self.training and self.negative_sampling:
+            prior_rep = node_rep -  torch.cat([head_arc_representation_mu ,child_arc_representation_mu ,head_tag_representation_mu ,child_tag_representation_mu ],dim=2)
+            prior_rep = prior_rep.detach()
+            prior_pos_scores = self.pos_score(prior_rep)
+            if self.auto_enc:
+                prior_auto_enc = None #self.auto_regre(prior_rep)
+
         # shape (batch_size, sequence_length, sequence_length)
         attended_arcs = self.arc_attention(head_arc_representation,
                                            child_arc_representation)
@@ -505,7 +505,7 @@ class FullVariationalBiaffineDependencyParser(Model):
             rec_loss = F.mse_loss(predicted_input* float_mask.unsqueeze(-1),raw_input* float_mask.unsqueeze(-1),reduction="sum")/ valid_positions.float()
         if prior_predicted_input is not None:
             prior_predicted_input = prior_predicted_input[:,1:]
-            rec_loss = rec_loss - F.mse_loss(prior_predicted_input* float_mask.unsqueeze(-1),raw_input* float_mask.unsqueeze(-1),reduction="sum")/ valid_positions.float()
+            rec_loss = rec_loss - self.negative_sampling*F.mse_loss(prior_predicted_input* float_mask.unsqueeze(-1),raw_input* float_mask.unsqueeze(-1),reduction="sum")/ valid_positions.float()
         else:
             rec_loss = 0
 

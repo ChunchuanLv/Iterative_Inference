@@ -87,14 +87,23 @@ class GumbelBiaffineDependencyParser(Model):
                  gumbel_head_t: float = 0,
                  dropout: float = 0.0,
                  input_dropout: float = 0.0,
+                 iterations: int = 0,
+                 latent_t: float = 0.1,
+                 refine_train:bool = False,
+                 refine_with_mst: bool=False,
+                 refine_lr: float = 1e-3,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(GumbelBiaffineDependencyParser, self).__init__(vocab, regularizer)
 
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
-
+        self.iterations = iterations
         self.gumbel_head_t = gumbel_head_t
+        self.latent_t = latent_t
+        self.refine_train = refine_train
+        self.refine_lr = refine_lr
+        self.refine_with_mst = refine_with_mst
         encoder_dim = encoder.get_output_dim()
 
         self.head_arc_feedforward = arc_feedforward or \
@@ -147,6 +156,74 @@ class GumbelBiaffineDependencyParser(Model):
         self._attachment_scores = AttachmentScores()
         initializer(self)
 
+
+    def iterative_refinement(self,
+                   latent_codes:Tuple[torch.Tensor],
+                    mask:torch.Tensor)->Tuple[torch.Tensor]:
+        with torch.enable_grad():
+            latent_codes_detached = [code.detach() for code in latent_codes]
+            latent_codes_delta = [torch.zeros_like(code, requires_grad=True) for code in latent_codes]
+
+            optimizer = torch.optim.SGD(latent_codes_delta,lr=self.refine_lr )
+            for i in range(self.iterations):
+                # Before the backward pass, use the optimizer object to zero all of the
+                # gradients for the Tensors it will update (which are the learnable weights
+                # of the model)
+
+                loss = self.get_loss(latent_codes_detached,latent_codes_delta,mask)
+
+                optimizer.zero_grad()
+
+                # Backward pass: compute gradient of the loss with respect to model parameters
+                loss.backward()
+
+                # Calling the step function on an Optimizer makes an update to its parameters
+                optimizer.step()
+            latent_codes_delta = [delta.detach() for delta in latent_codes_delta]
+            return [code+delta for code,delta in zip(latent_codes,latent_codes_delta)]
+
+    def get_loss(self,
+                 latent_codes_mean: Tuple[torch.Tensor],
+                 latent_codes_delta: Tuple[torch.Tensor],
+                    mask:torch.Tensor):
+
+
+        # shape (batch_size, sequence_length, dim)
+        head_arc_representation_mean,child_arc_representation_mean,head_tag_representation_mean,child_tag_representation_mean = latent_codes_mean
+        head_arc_representation_delta,child_arc_representation_delta,head_tag_representation_delta,child_tag_representation_delta = latent_codes_delta
+
+
+        head_arc_representation = head_arc_representation_mean + head_arc_representation_delta
+        child_arc_representation = child_arc_representation_mean + child_arc_representation_delta
+        head_tag_representation = head_tag_representation_mean + head_tag_representation_delta
+        child_tag_representation = child_tag_representation_mean + child_tag_representation_delta
+        # shape (batch_size, sequence_length, sequence_length)
+        attended_arcs = self.arc_attention(head_arc_representation,
+                                           child_arc_representation)
+        float_mask = mask.float()
+        minus_inf = -1e8
+        minus_mask = (1 - float_mask) * minus_inf
+        attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+        if self.refine_with_mst:
+            predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
+                                                                    child_tag_representation,
+                                                                    attended_arcs,
+                                                                    mask)
+
+        else:
+            predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
+                                                                       child_tag_representation,
+                                                                       attended_arcs,
+                                                                       mask)
+        arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                        child_tag_representation=child_tag_representation,
+                                                        attended_arcs=attended_arcs,
+                                                        head_indices=predicted_heads,
+                                                        head_tags=predicted_head_tags,
+                                                        mask=mask)
+        loss = arc_nll + tag_nll + sum([ (delta*delta* (1 - float_mask).unsqueeze(2)).sum() for delta in latent_codes_delta])/(2*self.latent_t**2)
+
+        return loss
     @overrides
     def forward(self,  # type: ignore
                 words: Dict[str, torch.LongTensor],
@@ -229,32 +306,51 @@ class GumbelBiaffineDependencyParser(Model):
         # shape (batch_size, sequence_length, tag_representation_dim)
         head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
         child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
-        # shape (batch_size, sequence_length, sequence_length)
-        attended_arcs = self.arc_attention(head_arc_representation,
-                                           child_arc_representation)
-
-        minus_inf = -1e8
-        minus_mask = (1 - float_mask) * minus_inf
-        attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
 
         if self.training or not self.use_mst_decoding_for_validation:
+            if self.refine_train and self.iterations > 0:
+                head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation = self.iterative_refinement(
+                   [head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation],
+                    mask)
+            # shape (batch_size, sequence_length, sequence_length)
+            attended_arcs = self.arc_attention(head_arc_representation,
+                                               child_arc_representation)
+
+            minus_inf = -1e8
+            minus_mask = (1 - float_mask) * minus_inf
+            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
             predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
                                                                        child_tag_representation,
                                                                        attended_arcs,
                                                                        mask)
         else:
+            if self.iterations > 0:
+                head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation = self.iterative_refinement(
+                   [head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation],
+                    mask)
+
+            # shape (batch_size, sequence_length, sequence_length)
+            attended_arcs = self.arc_attention(head_arc_representation,
+                                               child_arc_representation)
+
+            minus_inf = -1e8
+            minus_mask = (1 - float_mask) * minus_inf
+            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
             predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
                                                                     child_tag_representation,
                                                                     attended_arcs,
                                                                     mask)
+
+
         if head_indices is not None and head_tags is not None:
 
-            arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                    child_tag_representation=child_tag_representation,
-                                                    attended_arcs=attended_arcs,
-                                                    head_indices=head_indices,
-                                                    head_tags=head_tags,
-                                                    mask=mask)
+            arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                            child_tag_representation=child_tag_representation,
+                                                            attended_arcs=attended_arcs,
+                                                            head_indices=head_indices,
+                                                            head_tags=head_tags,
+                                                            mask=mask)
+            arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
             loss = arc_nll + tag_nll
 
             evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
@@ -267,12 +363,13 @@ class GumbelBiaffineDependencyParser(Model):
                                     head_tags[:, 1:],
                                     evaluation_mask)
         else:
-            arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
+            arc_nll, tag_nll , n_data = self._construct_loss(head_tag_representation=head_tag_representation,
                                                     child_tag_representation=child_tag_representation,
                                                     attended_arcs=attended_arcs,
                                                     head_indices=predicted_heads.long(),
                                                     head_tags=predicted_head_tags.long(),
                                                     mask=mask)
+            arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
             loss = arc_nll + tag_nll
 
         output_dict = {
@@ -376,9 +473,9 @@ class GumbelBiaffineDependencyParser(Model):
         # 1 per sequence in the batch, to account for the symbolic HEAD token.
         valid_positions = mask.sum() - batch_size
 
-        arc_nll = -arc_loss.sum() / valid_positions.float()
-        tag_nll = -tag_loss.sum() / valid_positions.float()
-        return arc_nll, tag_nll
+        arc_nll = -arc_loss.sum()
+        tag_nll = -tag_loss.sum()
+        return arc_nll, tag_nll , valid_positions.float()
 
     def _greedy_decode(self,
                        head_tag_representation: torch.Tensor,
@@ -538,6 +635,29 @@ class GumbelBiaffineDependencyParser(Model):
             head_tags.append(instance_head_tags)
         return torch.from_numpy(numpy.stack(heads)), torch.from_numpy(numpy.stack(head_tags))
 
+    def variational_refinement(self,encoded_text:torch.Tensor,
+                               head_attention:torch.Tensor,
+                               head_tag_logits:torch.Tensor,
+                               node_rep:torch.Tensor):
+        """
+        Parameters
+        ----------
+        encoded_text : torch.Tensor, required
+            The final encoding of source sentence
+            of shape (batch_size, sequence_length, (arc_representation_dim+tag_representation_dim)*2 ).
+        head_attention : ``torch.Tensor``, required.
+            The output of a ``SequenceLabelField`` containing POS tags.
+            POS tags are required regardless of whether they are used in the model,
+            because they are used to filter the evaluation metric to only consider
+            heads of words which are not punctuation.
+        head_tags : torch.LongTensor, optional (default = None)
+            A torch tensor representing the sequence of integer gold class labels for the arcs
+            in the dependency parse. Has shape ``(batch_size, sequence_length)``.
+        head_indices : torch.LongTensor, optional (default = None)
+            A torch tensor representing the sequence of integer indices denoting the parent of every
+            word in the dependency parse. Has shape ``(batch_size, sequence_length)``.
+        """
+        return None
     def _get_head_tags_with_relaxed(self,
                        head_tag_representation: torch.Tensor,
                        child_tag_representation: torch.Tensor,
