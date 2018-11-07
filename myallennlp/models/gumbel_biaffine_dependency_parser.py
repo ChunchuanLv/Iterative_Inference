@@ -80,6 +80,8 @@ class GumbelBiaffineDependencyParser(Model):
                  encoder: Seq2SeqEncoder,
                  tag_representation_dim: int,
                  arc_representation_dim: int,
+                 arcs_refiner: Seq2SeqEncoder = None,
+                 all_iteration_loss: bool = True,
                  tag_feedforward: FeedForward = None,
                  arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
@@ -87,23 +89,14 @@ class GumbelBiaffineDependencyParser(Model):
                  gumbel_head_t: float = 0,
                  dropout: float = 0.0,
                  input_dropout: float = 0.0,
-                 iterations: int = 0,
-                 latent_t: float = 0.1,
-                 refine_train:bool = False,
-                 refine_with_mst: bool=False,
-                 refine_lr: float = 1e-3,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(GumbelBiaffineDependencyParser, self).__init__(vocab, regularizer)
-
+        self.all_iteration_loss = all_iteration_loss
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
-        self.iterations = iterations
+        self.arcs_refiner = arcs_refiner
         self.gumbel_head_t = gumbel_head_t
-        self.latent_t = latent_t
-        self.refine_train = refine_train
-        self.refine_lr = refine_lr
-        self.refine_with_mst = refine_with_mst
         encoder_dim = encoder.get_output_dim()
 
         self.head_arc_feedforward = arc_feedforward or \
@@ -157,30 +150,6 @@ class GumbelBiaffineDependencyParser(Model):
         initializer(self)
 
 
-    def iterative_refinement(self,
-                   latent_codes:Tuple[torch.Tensor],
-                    mask:torch.Tensor)->Tuple[torch.Tensor]:
-        with torch.enable_grad():
-            latent_codes_detached = [code.detach() for code in latent_codes]
-            latent_codes_delta = [torch.zeros_like(code, requires_grad=True) for code in latent_codes]
-
-            optimizer = torch.optim.SGD(latent_codes_delta,lr=self.refine_lr )
-            for i in range(self.iterations):
-                # Before the backward pass, use the optimizer object to zero all of the
-                # gradients for the Tensors it will update (which are the learnable weights
-                # of the model)
-
-                loss = self.get_loss(latent_codes_detached,latent_codes_delta,mask)
-
-                optimizer.zero_grad()
-
-                # Backward pass: compute gradient of the loss with respect to model parameters
-                loss.backward()
-
-                # Calling the step function on an Optimizer makes an update to its parameters
-                optimizer.step()
-            latent_codes_delta = [delta.detach() for delta in latent_codes_delta]
-            return [code+delta for code,delta in zip(latent_codes,latent_codes_delta)]
 
     def get_loss(self,
                  latent_codes_mean: Tuple[torch.Tensor],
@@ -306,71 +275,73 @@ class GumbelBiaffineDependencyParser(Model):
         # shape (batch_size, sequence_length, tag_representation_dim)
         head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
         child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
+        # shape (batch_size, sequence_length, sequence_length)
+        attended_arcs = self.arc_attention(head_arc_representation,
+                                           child_arc_representation)
 
-        if self.training or not self.use_mst_decoding_for_validation:
-            if self.refine_train and self.iterations > 0:
-                head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation = self.iterative_refinement(
-                   [head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation],
-                    mask)
-            # shape (batch_size, sequence_length, sequence_length)
-            attended_arcs = self.arc_attention(head_arc_representation,
-                                               child_arc_representation)
-
-            minus_inf = -1e8
-            minus_mask = (1 - float_mask) * minus_inf
-            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
-            predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
-                                                                       child_tag_representation,
-                                                                       attended_arcs,
-                                                                       mask)
+        minus_inf = -1e8
+        minus_mask = (1 - float_mask) * minus_inf
+        attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+        all_arc_nll, all_tag_nll = 0,0
+        if self.arcs_refiner :
+            float_mask = float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
+            head_arc_representation_list, child_arc_representation_list,attended_arcs_list = self.arcs_refiner( head_arc_representation,
+                                                                                                 child_arc_representation,
+                                                                                                 attended_arcs,
+                                                                                                float_mask)
+            if not self.all_iteration_loss or not self.training:
+                head_arc_representation_list, child_arc_representation_list, attended_arcs_list = [head_arc_representation_list[-1]], \
+                                                                                                  [child_arc_representation_list[-1]], \
+                                                                                                  [ attended_arcs_list[-1]]
         else:
-            if self.iterations > 0:
-                head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation = self.iterative_refinement(
-                   [head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation],
-                    mask)
+            head_arc_representation_list, child_arc_representation_list, attended_arcs_list = [head_arc_representation],[child_arc_representation], [attended_arcs]
+        for head_arc_representation, child_arc_representation,attended_arcs in zip(head_arc_representation_list, child_arc_representation_list,attended_arcs_list):
 
-            # shape (batch_size, sequence_length, sequence_length)
-            attended_arcs = self.arc_attention(head_arc_representation,
-                                               child_arc_representation)
-
-            minus_inf = -1e8
-            minus_mask = (1 - float_mask) * minus_inf
-            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
-            predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
-                                                                    child_tag_representation,
-                                                                    attended_arcs,
-                                                                    mask)
+            if self.training or not self.use_mst_decoding_for_validation:
+                predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
+                                                                           child_tag_representation,
+                                                                           attended_arcs,
+                                                                           mask)
+            else:
+                predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
+                                                                        child_tag_representation,
+                                                                        attended_arcs,
+                                                                        mask)
 
 
-        if head_indices is not None and head_tags is not None:
+            if head_indices is not None and head_tags is not None:
 
-            arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                            child_tag_representation=child_tag_representation,
-                                                            attended_arcs=attended_arcs,
-                                                            head_indices=head_indices,
-                                                            head_tags=head_tags,
-                                                            mask=mask)
-            arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
-            loss = arc_nll + tag_nll
+                arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                                child_tag_representation=child_tag_representation,
+                                                                attended_arcs=attended_arcs,
+                                                                head_indices=head_indices,
+                                                                head_tags=head_tags,
+                                                                mask=mask)
+                arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
+                all_arc_nll =  all_arc_nll + arc_nll
+                all_tag_nll =  all_tag_nll + tag_nll
+                loss =  all_arc_nll + all_tag_nll
 
-            evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
-            # We calculate attatchment scores for the whole sentence
-            # but excluding the symbolic ROOT token at the start,
-            # which is why we start from the second element in the sequence.
-            self._attachment_scores(predicted_heads[:, 1:],
-                                    predicted_head_tags[:, 1:],
-                                    head_indices[:, 1:],
-                                    head_tags[:, 1:],
-                                    evaluation_mask)
-        else:
-            arc_nll, tag_nll , n_data = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                    child_tag_representation=child_tag_representation,
-                                                    attended_arcs=attended_arcs,
-                                                    head_indices=predicted_heads.long(),
-                                                    head_tags=predicted_head_tags.long(),
-                                                    mask=mask)
-            arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
-            loss = arc_nll + tag_nll
+                evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
+                # We calculate attatchment scores for the whole sentence
+                # but excluding the symbolic ROOT token at the start,
+                # which is why we start from the second element in the sequence.
+                self._attachment_scores(predicted_heads[:, 1:],
+                                        predicted_head_tags[:, 1:],
+                                        head_indices[:, 1:],
+                                        head_tags[:, 1:],
+                                        evaluation_mask)
+            else:
+                arc_nll, tag_nll , n_data = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                        child_tag_representation=child_tag_representation,
+                                                        attended_arcs=attended_arcs,
+                                                        head_indices=predicted_heads.long(),
+                                                        head_tags=predicted_head_tags.long(),
+                                                        mask=mask)
+                arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
+                all_arc_nll =  all_arc_nll + arc_nll
+                all_tag_nll =  all_tag_nll + tag_nll
+                loss =  all_arc_nll + all_tag_nll
 
         output_dict = {
                 "heads": predicted_heads,

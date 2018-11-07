@@ -82,9 +82,11 @@ class ELMOBiaffineDependencyParser(Model):
                  arc_representation_dim: int,
                  tag_feedforward: FeedForward = None,
                  arc_feedforward: FeedForward = None,
+                 pos_tag_embedding: Embedding = None,
                  use_mst_decoding_for_validation: bool = True,
                  gumbel_head_t: float = 0,
                  dropout: float = 0.0,
+                 auto_enc:bool = False,
                  input_dropout: float = 0.0,
                  iterations: int = 0,
                  latent_t: float = 0.1,
@@ -126,12 +128,27 @@ class ELMOBiaffineDependencyParser(Model):
         self.tag_bilinear = torch.nn.modules.Bilinear(tag_representation_dim,
                                                       tag_representation_dim,
                                                       num_labels)
-
+        self.pos_tag_embedding = pos_tag_embedding
         self._dropout = InputVariationalDropout(dropout)
         self._input_dropout = Dropout(input_dropout)
         self._head_sentinel = torch.nn.Parameter(torch.randn([1, 1, encoder.get_output_dim()]))
 
         representation_dim = text_field_embedder.get_output_dim()
+
+        self.auto_enc = auto_enc
+        if auto_enc:
+            num_words = self.vocab.get_vocab_size()
+
+            print ("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!self.vocab._token_to_index",num_words)
+            for name in self.vocab._token_to_index:
+                print(name,len(self.vocab._token_to_index))
+            self.char_score = FeedForward(self.encoder.get_output_dim(), 1,
+                                          num_words,
+                                                         Activation.by_name("linear")())
+            num_pos = self.vocab.get_vocab_size("pos")
+            self.pos_score = FeedForward(self.encoder.get_output_dim(), 2,
+                                          [representation_dim,num_pos],
+                                                         [Activation.by_name("elu")(),Activation.by_name("linear")()])
 
         check_dimensions_match(representation_dim, encoder.get_input_dim(),
                                "text field embedding dim", "encoder input dim")
@@ -272,7 +289,6 @@ class ELMOBiaffineDependencyParser(Model):
             A mask denoting the padded elements in the batch.
         """
         embedded_text_input = self.text_field_embedder(words)
-
         mask = get_text_field_mask(words)
         embedded_text_input = self._input_dropout(embedded_text_input)
         encoded_text = self.encoder(embedded_text_input, mask)
@@ -289,7 +305,9 @@ class ELMOBiaffineDependencyParser(Model):
             head_tags = torch.cat([head_tags.new_zeros(batch_size, 1), head_tags], 1)
         float_mask = mask.float()
         encoded_text = self._dropout(encoded_text)
-
+        if self.auto_enc:
+            word_score = self.word_score(encoded_text)
+            pos_score = self.pos_score(encoded_text)
         # shape (batch_size, sequence_length, arc_representation_dim)
         head_arc_representation = self._dropout(self.head_arc_feedforward(encoded_text))
         child_arc_representation = self._dropout(self.child_arc_feedforward(encoded_text))
@@ -299,10 +317,6 @@ class ELMOBiaffineDependencyParser(Model):
         child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
 
         if self.training or not self.use_mst_decoding_for_validation:
-            if self.refine_train and self.iterations > 0:
-                head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation = self.iterative_refinement(
-                   [head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation],
-                    mask)
             # shape (batch_size, sequence_length, sequence_length)
             attended_arcs = self.arc_attention(head_arc_representation,
                                                child_arc_representation)
@@ -315,11 +329,6 @@ class ELMOBiaffineDependencyParser(Model):
                                                                        attended_arcs,
                                                                        mask)
         else:
-            if self.iterations > 0:
-                head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation = self.iterative_refinement(
-                   [head_arc_representation, child_arc_representation, head_tag_representation, child_tag_representation],
-                    mask)
-
             # shape (batch_size, sequence_length, sequence_length)
             attended_arcs = self.arc_attention(head_arc_representation,
                                                child_arc_representation)
@@ -341,8 +350,13 @@ class ELMOBiaffineDependencyParser(Model):
                                                             head_indices=head_indices,
                                                             head_tags=head_tags,
                                                             mask=mask)
-            arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
-            loss = arc_nll + tag_nll
+            loss = (arc_nll + tag_nll  )/ n_data
+
+            if self.auto_enc:
+                pos_nll , words_nll = self._auto_enc_loss(pos_tags,pos_score,words["elmo"],word_score,mask)
+                loss = loss + (pos_nll + words_nll  )/ n_data
+
+
 
             evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
             # We calculate attatchment scores for the whole sentence
@@ -360,8 +374,10 @@ class ELMOBiaffineDependencyParser(Model):
                                                     head_indices=predicted_heads.long(),
                                                     head_tags=predicted_head_tags.long(),
                                                     mask=mask)
-            arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
-            loss = arc_nll + tag_nll
+            loss = ( arc_nll + tag_nll )/ n_data
+            if self.auto_enc:
+                pos_nll , words_nll = self._auto_enc_loss(pos_tags,pos_score,words["elmo"],word_score,mask)
+                loss = loss + (pos_nll + words_nll  )/ n_data
 
         output_dict = {
                 "heads": predicted_heads,
@@ -396,6 +412,24 @@ class ELMOBiaffineDependencyParser(Model):
         output_dict["predicted_dependencies"] = head_tag_labels
         output_dict["predicted_heads"] = head_indices
         return output_dict
+    def _auto_enc_loss(self,
+                        pos_tags: torch.Tensor,
+                        pos_logits: torch.Tensor,
+                        words : torch.Tensor,
+                        words_logits: torch.Tensor,
+                        mask: torch.Tensor):
+
+        float_mask = mask.float()
+
+        normalised_pos_tag_logits = masked_log_softmax(pos_logits, mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
+        normalised_pos_tag_logits = normalised_pos_tag_logits[:,1:]
+        pos_nll = F.nll_loss(normalised_pos_tag_logits.transpose(1,2), pos_tags, reduction="sum")
+
+        normalised_words_logits = masked_log_softmax(words_logits, mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
+        normalised_words_logits = normalised_words_logits[:,1:]
+        words_nll = F.nll_loss(normalised_words_logits.transpose(1,2), words, reduction="sum")
+
+        return pos_nll,words_nll
 
     def _construct_loss(self,
                         head_tag_representation: torch.Tensor,
@@ -466,6 +500,7 @@ class ELMOBiaffineDependencyParser(Model):
 
         arc_nll = -arc_loss.sum()
         tag_nll = -tag_loss.sum()
+
         return arc_nll, tag_nll , valid_positions.float()
 
     def _greedy_decode(self,

@@ -17,11 +17,7 @@
         "type": "gumbel_biaffine_parser",
         "arc_representation_dim": 500,
         "dropout": 0.3,
-        "iterations": 10,
-        "latent_t": 10,
-        "refine_lr":1e-1,
-        "refine_with_mst": false,
-        "refine_train":false,
+
         "gumbel_head_t": 1.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
@@ -30,6 +26,15 @@
             "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
+        },
+        "all_iteration_loss":true,
+        "arcs_refiner":{
+            "type": "my_stacked_self_attention_refiner",
+             "head_dim": 500,
+             "child_dim": 500,
+            "projection_dim":500,
+             "feedforward_hidden_dim": 500,
+             "num_iterations": 2
         },
         "initializer": [
             [
@@ -104,7 +109,7 @@
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
     "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 1,
+        "cuda_device": 3,
         "grad_norm": 5,
         "num_epochs": 100,
         "optimizer": {

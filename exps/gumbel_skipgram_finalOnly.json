@@ -1,16 +1,11 @@
 {
     "dataset_reader": {
         "type": "universal_dependencies",
-        "use_language_specific_pos": true,
-          "token_indexers": {
-              "elmo": {
-                  "type": "elmo_characters"
-              }
-          }
+        "use_language_specific_pos": true
     },
     "iterator": {
         "type": "bucket",
-        "batch_size": 2,
+        "batch_size": 128,
         "sorting_keys": [
             [
                 "words",
@@ -19,24 +14,28 @@
         ]
     },
     "model": {
-        "type": "elmo_biaffine_parser",
+        "type": "gumbel_biaffine_parser",
         "arc_representation_dim": 500,
+        "dropout": 0.3,
+
+        "gumbel_head_t": 1.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
-            "hidden_size": 1124,
-            "input_size": 1124,
+            "hidden_size": 500,
+            "input_size": 200,
             "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
         },
-        "auto_enc": true,
-        "dropout": 0.3,
-        "iterations": 0,
-        "latent_t": 10,
-        "refine_lr":1e-1,
-        "refine_with_mst": false,
-        "refine_train":false,
-        "gumbel_head_t": 1.0,
+        "all_iteration_loss":false,
+        "arcs_refiner":{
+            "type": "my_stacked_self_attention_refiner",
+             "head_dim": 500,
+             "child_dim": 500,
+            "projection_dim":500,
+             "feedforward_hidden_dim": 500,
+             "num_iterations": 2
+        },
         "initializer": [
             [
                 ".*feedforward.*weight",
@@ -95,13 +94,13 @@
         },
         "tag_representation_dim": 200,
         "text_field_embedder": {
-          "elmo": {
-            "type": "elmo_token_embedder",
-            "options_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_options.json",
-            "weight_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
-            "do_layer_norm": false,
-            "dropout": 0.5
-          }
+            "tokens": {
+                "type": "embedding",
+                "embedding_dim": 100,
+                "pretrained_file": "/disk/scratch/s1544871/sskip.eng.100.gz",
+                "sparse": true,
+                "trainable": true
+            }
         },
         "use_mst_decoding_for_validation": true
     },
@@ -112,7 +111,7 @@
     "trainer": {
         "cuda_device": 3,
         "grad_norm": 5,
-        "num_epochs": 50,
+        "num_epochs": 100,
         "optimizer": {
             "type": "dense_sparse_adam",
             "betas": [
@@ -121,7 +120,6 @@
             ]
         },
         "patience": 50,
-        "validation_metric": "+LAS",
-        "num_serialized_models_to_keep":-1
+        "validation_metric": "+LAS"
     }
 }
