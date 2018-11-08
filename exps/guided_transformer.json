@@ -14,28 +14,18 @@
         ]
     },
     "model": {
-        "type": "gumbel_biaffine_parser",
+        "type": "guided_transformer_biaffine_parser",
         "arc_representation_dim": 500,
         "dropout": 0.3,
-
-        "gumbel_head_t": 1.0,
+        "use_transformer_arcs":true,
         "encoder": {
-            "type": "stacked_bidirectional_lstm",
-            "hidden_size": 500,
-            "input_size": 200,
-            "num_layers": 3,
-            "recurrent_dropout_probability": 0.3,
-            "use_highway": true
-        },
-        "all_iteration_loss":true,
-        "arcs_refiner":{
-            "type": "my_stacked_self_attention_refiner",
-             "head_dim": 500,
-             "child_dim": 500,
-            "tag_dim":200,
-            "projection_dim":300,
-             "feedforward_hidden_dim": 300,
-             "num_iterations": 2
+            "type": "stacked_output_self_attention",
+            "hidden_dim": 400,
+            "input_dim": 200,
+            "projection_dim":400,
+            "feedforward_hidden_dim":400,
+            "num_attention_heads": 8,
+            "num_layers": 4
         },
         "initializer": [
             [
@@ -93,7 +83,7 @@
             "sparse": true,
             "vocab_namespace": "pos"
         },
-        "tag_representation_dim": 200,
+        "tag_representation_dim": 100,
         "text_field_embedder": {
             "tokens": {
                 "type": "embedding",
@@ -108,11 +98,10 @@
     "train_data_path": "/disk/scratch/s1544871/ptb/train.gold.conll",
     "validation_data_path": "/disk/scratch/s1544871/ptb/dev.gold.conll",
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
-    "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 3,
+        "cuda_device": 1,
         "grad_norm": 5,
-        "num_epochs": 100,
+        "num_epochs": 200,
         "optimizer": {
             "type": "dense_sparse_adam",
             "betas": [
@@ -120,7 +109,7 @@
                 0.9
             ]
         },
-        "patience": 50,
+        "patience": 30,
         "validation_metric": "+LAS"
     }
 }

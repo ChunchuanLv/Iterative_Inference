@@ -18,9 +18,8 @@ from allennlp.nn import InitializerApplicator, RegularizerApplicator, Activation
 from allennlp.nn.util import get_text_field_mask, get_range_vector
 from allennlp.nn.util import get_device_of, masked_log_softmax, get_lengths_from_binary_sequence_mask
 from allennlp.nn.chu_liu_edmonds import decode_mst
-from allennlp.training.metrics import AttachmentScores
-from myallennlp.modules.reparametrization.gumbel_softmax import gumbel_softmax
-
+from myallennlp.modules.reparametrization import gumbel_softmax
+from myallennlp.metric import IterativeAttachmentScores
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 POS_TO_IGNORE = {'``', "''", ':', ',', '.', 'PU', 'PUNCT', 'SYM'}
@@ -82,6 +81,9 @@ class GumbelBiaffineDependencyParser(Model):
                  arc_representation_dim: int,
                  arcs_refiner: Seq2SeqEncoder = None,
                  all_iteration_loss: bool = True,
+                 use_refiner_attention:bool=False,
+                 num_iterations: int=0,
+                 num_iterations_test: int =0,
                  tag_feedforward: FeedForward = None,
                  arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
@@ -93,16 +95,19 @@ class GumbelBiaffineDependencyParser(Model):
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(GumbelBiaffineDependencyParser, self).__init__(vocab, regularizer)
         self.all_iteration_loss = all_iteration_loss
+        self.use_refiner_attention = use_refiner_attention
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
         self.arcs_refiner = arcs_refiner
+        self.num_iterations = num_iterations
+        self.num_iterations_test = num_iterations_test
         self.gumbel_head_t = gumbel_head_t
         encoder_dim = encoder.get_output_dim()
 
         self.head_arc_feedforward = arc_feedforward or \
                                         FeedForward(encoder_dim, 1,
                                                     arc_representation_dim,
-                                                    Activation.by_name("elu")())
+                                                    Activation.by_name("relu")())
         self.child_arc_feedforward = copy.deepcopy(self.head_arc_feedforward)
 
         self.arc_attention = BilinearMatrixAttention(arc_representation_dim,
@@ -114,7 +119,7 @@ class GumbelBiaffineDependencyParser(Model):
         self.head_tag_feedforward = tag_feedforward or \
                                         FeedForward(encoder_dim, 1,
                                                     tag_representation_dim,
-                                                    Activation.by_name("elu")())
+                                                    Activation.by_name("relu")())
         self.child_tag_feedforward = copy.deepcopy(self.head_tag_feedforward)
 
         self.tag_bilinear = torch.nn.modules.Bilinear(tag_representation_dim,
@@ -146,7 +151,7 @@ class GumbelBiaffineDependencyParser(Model):
         logger.info(f"Found POS tags correspoding to the following punctuation : {punctuation_tag_indices}. "
                     "Ignoring words with these POS tags for evaluation.")
 
-        self._attachment_scores = AttachmentScores()
+        self._attachment_scores = IterativeAttachmentScores()
         initializer(self)
 
 
@@ -255,6 +260,7 @@ class GumbelBiaffineDependencyParser(Model):
         embedded_text_input = self._input_dropout(embedded_text_input)
         encoded_text = self.encoder(embedded_text_input, mask)
 
+        assert torch.isnan(encoded_text).sum() == 0, ("fresh encoded_text ",encoded_text)
         batch_size, _, encoding_dim = encoded_text.size()
 
         head_sentinel = self._head_sentinel.expand(batch_size, 1, encoding_dim)
@@ -266,12 +272,16 @@ class GumbelBiaffineDependencyParser(Model):
         if head_tags is not None:
             head_tags = torch.cat([head_tags.new_zeros(batch_size, 1), head_tags], 1)
         float_mask = mask.float()
+        assert torch.isnan(encoded_text).sum() == 0, ("before drop encoded_text ",encoded_text)
         encoded_text = self._dropout(encoded_text)
 
+        assert torch.isnan(encoded_text).sum() == 0, ("encoded_text ",encoded_text)
         # shape (batch_size, sequence_length, arc_representation_dim)
         head_arc_representation = self._dropout(self.head_arc_feedforward(encoded_text))
         child_arc_representation = self._dropout(self.child_arc_feedforward(encoded_text))
 
+        assert torch.isnan(head_arc_representation).sum() == 0, ("head_arc_representation ",head_arc_representation)
+        assert torch.isnan(child_arc_representation).sum() == 0, ("child_arc_representation ",child_arc_representation)
         # shape (batch_size, sequence_length, tag_representation_dim)
         head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
         child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
@@ -279,23 +289,26 @@ class GumbelBiaffineDependencyParser(Model):
         attended_arcs = self.arc_attention(head_arc_representation,
                                            child_arc_representation)
 
-        minus_inf = -1e8
-        minus_mask = (1 - float_mask) * minus_inf
-        attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+        input = torch.cat([head_arc_representation, child_arc_representation], dim=-1)
         all_arc_nll, all_tag_nll = 0,0
         if self.arcs_refiner :
-            float_mask = float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
-            head_arc_representation_list, child_arc_representation_list,attended_arcs_list = self.arcs_refiner( head_arc_representation,
-                                                                                                 child_arc_representation,
-                                                                                                 attended_arcs,
-                                                                                                float_mask)
-            if not self.all_iteration_loss or not self.training:
-                head_arc_representation_list, child_arc_representation_list, attended_arcs_list = [head_arc_representation_list[-1]], \
-                                                                                                  [child_arc_representation_list[-1]], \
-                                                                                                  [ attended_arcs_list[-1]]
+            num_iterations = self.num_iterations if self.training else self.num_iterations_test
+            data_list,attended_arcs_list = self.arcs_refiner( input,attended_arcs,mask, num_iterations )
+            if not self.all_iteration_loss :
+                data_list, attended_arcs_list = [data_list[-1]],  [ attended_arcs_list[-1]]
         else:
-            head_arc_representation_list, child_arc_representation_list, attended_arcs_list = [head_arc_representation],[child_arc_representation], [attended_arcs]
-        for head_arc_representation, child_arc_representation,attended_arcs in zip(head_arc_representation_list, child_arc_representation_list,attended_arcs_list):
+            data_list, attended_arcs_list = [input],  [ attended_arcs]
+        for i, (data_representation,attended_arcs) in enumerate(zip(data_list,attended_arcs_list)):
+
+            if not self.use_refiner_attention:
+                head_arc_representation =  self._dropout(data_representation[:,:,:self.head_arc_feedforward.get_output_dim()])
+                child_arc_representation =  self._dropout(data_representation[:,:,self.head_arc_feedforward.get_output_dim():])
+
+                attended_arcs = self.arc_attention(head_arc_representation,
+                                                   child_arc_representation)
+            minus_inf = -1e8
+            minus_mask = (1 - float_mask) * minus_inf
+            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
 
             if self.training or not self.use_mst_decoding_for_validation:
                 predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
@@ -330,6 +343,7 @@ class GumbelBiaffineDependencyParser(Model):
                                         predicted_head_tags[:, 1:],
                                         head_indices[:, 1:],
                                         head_tags[:, 1:],
+                                        i,
                                         evaluation_mask)
             else:
                 arc_nll, tag_nll , n_data = self._construct_loss(head_tag_representation=head_tag_representation,
@@ -666,6 +680,9 @@ class GumbelBiaffineDependencyParser(Model):
         selected_head_tag_representations = torch.matmul(relaxed_head,head_tag_representation)
       #  selected_head_tag_representations = selected_head_tag_representations.contiguous()
         # shape (batch_size, sequence_length, num_head_tags)
+
+   #     print ("selected_head_tag_representations",selected_head_tag_representations.size())
+   #     print ("child_tag_representation",child_tag_representation.size())
         head_tag_logits = self.tag_bilinear(selected_head_tag_representations,
                                             child_tag_representation)
         return head_tag_logits

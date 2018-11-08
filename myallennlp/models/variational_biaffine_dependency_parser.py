@@ -19,7 +19,7 @@ from allennlp.nn.util import get_text_field_mask, get_range_vector
 from allennlp.nn.util import get_device_of, masked_log_softmax, get_lengths_from_binary_sequence_mask
 from allennlp.nn.chu_liu_edmonds import decode_mst
 from allennlp.training.metrics import AttachmentScores
-from myallennlp.modules.reparametrization.gumbel_softmax import gumbel_softmax
+from myallennlp.modules.reparametrization import gumbel_softmax
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 

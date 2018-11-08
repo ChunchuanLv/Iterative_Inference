@@ -21,21 +21,24 @@
         "gumbel_head_t": 1.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
-            "hidden_size": 500,
+            "hidden_size": 400,
             "input_size": 200,
             "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
         },
         "all_iteration_loss":true,
+        "use_refiner_attention":true,
+             "num_iterations": 3,
+             "num_iterations_test": 5,
         "arcs_refiner":{
-            "type": "my_stacked_self_attention_refiner",
-             "head_dim": 500,
-             "child_dim": 500,
-            "tag_dim":200,
-            "projection_dim":300,
-             "feedforward_hidden_dim": 300,
-             "num_iterations": 2
+            "type": "stacked_self_attention_refiner",
+            "hidden_dim": 1000,
+            "input_dim": 1000,
+            "projection_dim":500,
+            "feedforward_hidden_dim":1000,
+            "num_attention_heads": 1,
+            "gating": false
         },
         "initializer": [
             [
@@ -93,7 +96,7 @@
             "sparse": true,
             "vocab_namespace": "pos"
         },
-        "tag_representation_dim": 200,
+        "tag_representation_dim": 100,
         "text_field_embedder": {
             "tokens": {
                 "type": "embedding",
@@ -120,6 +123,7 @@
                 0.9
             ]
         },
+        "num_serialized_models_to_keep":2,
         "patience": 50,
         "validation_metric": "+LAS"
     }

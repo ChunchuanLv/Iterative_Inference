@@ -1,0 +1,2 @@
+from myallennlp.modules.layered_output_transformer.multi_head_self_attention import MultiHeadSelfAttentionWithScore
+from myallennlp.modules.layered_output_transformer.stacked_self_attention import StackedOutputSelfAttentionEncoder

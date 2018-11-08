@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.nn.modules import Dropout
 import numpy
 
-from allennlp.common.checks import check_dimensions_match, ConfigurationError
+from allennlp.common.checks import check_dimensions_match
 from allennlp.data import Vocabulary
 from allennlp.modules import Seq2SeqEncoder, TextFieldEmbedder, Embedding, InputVariationalDropout
 from allennlp.modules.matrix_attention.bilinear_matrix_attention import BilinearMatrixAttention
@@ -19,7 +19,7 @@ from allennlp.nn.util import get_text_field_mask, get_range_vector
 from allennlp.nn.util import get_device_of, masked_log_softmax, get_lengths_from_binary_sequence_mask
 from allennlp.nn.chu_liu_edmonds import decode_mst
 from allennlp.training.metrics import AttachmentScores
-from myallennlp.modules.reparametrization.gumbel_softmax import gumbel_softmax
+from myallennlp.modules.reparametrization import gumbel_softmax
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
