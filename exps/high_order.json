@@ -14,35 +14,18 @@
         ]
     },
     "model": {
-        "type": "gumbel_biaffine_parser",
+        "type": "high_order_parser",
         "arc_representation_dim": 500,
         "dropout": 0.3,
-        "gumbel_head_t": 1.0,
+        "margin": 1.0,
+        "with_cross_loss": true,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
             "hidden_size": 400,
             "input_size": 200,
-            "num_layers": 1,
+            "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
-        },
-        "all_iteration_loss":true,
-        "use_refiner_attention":true,
-         "num_iterations": 5,
-         "num_iterations_test": 5,
-        "refine_weight":1.0,
-
-        "arcs_refiner":{
-            "type": "stacked_self_attention_refiner",
-            "hidden_dim": 800,
-            "input_dim": 800,
-            "projection_dim":500,
-            "feedforward_hidden_dim":800,
-            "dropout_prob": 0.3,
-            "num_layers": 1,
-            "num_attention_heads": 2,
-            "gumbel_head_t": 1.0,
-            "gumbel_at_test": false
         },
         "initializer": [
             [
@@ -115,11 +98,10 @@
     "train_data_path": "/disk/scratch/s1544871/ptb/train.gold.conll",
     "validation_data_path": "/disk/scratch/s1544871/ptb/dev.gold.conll",
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
-    "evaluate_on_test": true,
     "trainer": {
         "cuda_device": 2,
         "grad_norm": 5,
-        "num_epochs": 100,
+        "num_epochs": 80,
         "optimizer": {
             "type": "dense_sparse_adam",
             "betas": [
@@ -127,7 +109,6 @@
                 0.9
             ]
         },
-        "num_serialized_models_to_keep":2,
         "patience": 50,
         "validation_metric": "+LAS"
     }

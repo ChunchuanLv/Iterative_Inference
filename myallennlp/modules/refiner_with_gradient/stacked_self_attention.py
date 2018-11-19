@@ -1,20 +1,22 @@
-from typing import List
-
 from overrides import overrides
 import torch
 from torch.nn import Dropout
+import torch.nn.functional as F
 
 from allennlp.modules.feedforward import FeedForward
 from allennlp.modules.layer_norm import LayerNorm
-from allennlp.modules.seq2seq_encoders.multi_head_self_attention import MultiHeadSelfAttention
 from allennlp.modules.seq2seq_encoders.seq2seq_encoder import Seq2SeqEncoder
 from allennlp.nn.activations import Activation
+
+from allennlp.nn import InitializerApplicator, RegularizerApplicator
+
+from allennlp.nn.util import masked_softmax, weighted_sum
 from allennlp.nn.util import add_positional_features
-from myallennlp.modules.my_multi_head_self_attention_refiner import MultiHeadAttention
+from myallennlp.modules.refiner.multi_head_self_attention import SelfAttentionRefinment
 
 
-@Seq2SeqEncoder.register("my_stacked_self_attention_refiner")
-class MyStackedSelfAttentionRefinment(Seq2SeqEncoder):
+@Seq2SeqEncoder.register("gradient_refiner")
+class GradientRefinment(Seq2SeqEncoder):
     # pylint: disable=line-too-long
     """
     Implements a stacked self-attention encoder similar to the Transformer
@@ -60,36 +62,35 @@ class MyStackedSelfAttentionRefinment(Seq2SeqEncoder):
         The dropout probability for the attention distributions in each attention layer.
     """
     def __init__(self,
-                 head_dim: int,
-                 child_dim: int,
-                 projection_dim:int,
+                 input_dim: int,
+                 hidden_dim: int,
+                 projection_dim: int,
                  feedforward_hidden_dim: int,
-                 num_iterations: int,
-                 num_attention_heads: int = 1,
-                 use_positional_encoding: bool = False,
+                 num_attention_heads: int,
+                 use_positional_encoding: bool = True,
+                 gating:bool = True,
                  dropout_prob: float = 0.1,
                  residual_dropout_prob: float = 0.2,
                  attention_dropout_prob: float = 0.1) -> None:
-        super(MyStackedSelfAttentionRefinment, self).__init__()
-        self.head_dim = head_dim
-        self.child_dim = child_dim
-        input_dim = head_dim + child_dim
+        super(GradientRefinment, self).__init__()
         self._use_positional_encoding = use_positional_encoding
 
-        feedfoward_input_dim = input_dim
-        self.num_iterations = num_iterations
-        self.feedforward = FeedForward(feedfoward_input_dim,
+        self.feedforward = FeedForward(input_dim,
                                      activations=[Activation.by_name('elu')(),
                                                   Activation.by_name('linear')()],
-                                     hidden_dims=[feedforward_hidden_dim, head_dim + child_dim],
+                                     hidden_dims=[feedforward_hidden_dim, hidden_dim],
                                      num_layers=2,
                                      dropout=dropout_prob)
 
-
         self.feedforward_layer_norm = LayerNorm(self.feedforward.get_output_dim())
-        self.attention = MultiHeadAttention(n_head = num_attention_heads, head_dim=head_dim, child_dim=child_dim, hidden_dim=projection_dim,
-                                            dropout=attention_dropout_prob)
+        self.attention = SelfAttentionRefinment(num_heads=num_attention_heads,
+                                                    input_dim=hidden_dim,
+                                                    attention_dim=projection_dim,
+                                                    values_dim=projection_dim,
+                                                    output_projection_dim = input_dim,
+                                                         gating=gating)
 
+        self.layer_norm = LayerNorm(self.attention.get_output_dim())
 
         self.dropout = Dropout(residual_dropout_prob)
         self._input_dim = input_dim
@@ -108,10 +109,10 @@ class MyStackedSelfAttentionRefinment(Seq2SeqEncoder):
         return False
 
     @overrides
-    def forward(self, heads: torch.Tensor,
-                children:torch.Tensor,
+    def forward(self, input: torch.Tensor,
                 attended_arcs:torch.Tensor,
-                mask: torch.Tensor): # pylint: disable=arguments-differ
+                mask: torch.Tensor,
+                num_iterations:int): # pylint: disable=arguments-differ
         '''
 
 
@@ -122,38 +123,37 @@ class MyStackedSelfAttentionRefinment(Seq2SeqEncoder):
         :param mask:
         :return:
         '''
-        heads_list = []
-        child_list = []
-        arcs_list = []
-        heads_list.append(heads)
-        child_list.append(children)
-        arcs_list.append(attended_arcs)
+        assert torch.isnan(input).sum() == 0, ("refiner input",input)
+        data_list = []
+        attended_arcs_list = []
 
-        inputs = torch.cat([heads,children],dim=2)
+        data_list.append(input)
+        attended_arcs_list.append(attended_arcs)
+
         if self._use_positional_encoding:
-            output = add_positional_features(inputs)
+            output = add_positional_features(input)
         else:
-            output = inputs
-        for i in range(self.num_iterations):
+            output = input
+        for i in range(num_iterations):
             cached_input = output
             # Project output of attention encoder through a feedforward
             # network and back to the input size for the next layer.
             # shape (batch_size, timesteps, input_size)
+            assert torch.isnan(output).sum() == 0, ("output",output)
             feedforward_output = self.feedforward(output)
+            assert torch.isnan(feedforward_output).sum() == 0, ("feedforward_output",feedforward_output)
             feedforward_output = self.dropout(feedforward_output)
             if feedforward_output.size() == cached_input.size():
                 # First layer might have the wrong size for highway
                 # layers, so we exclude it here.
                 feedforward_output = self.feedforward_layer_norm(feedforward_output + cached_input)
+                assert torch.isnan(feedforward_output).sum() == 0, ("normed_feedforward_output",feedforward_output)
             # shape (batch_size, sequence_length, hidden_dim)
-            attention_output,attended_arcs = self.attention(heads,children,feedforward_output,attended_arcs, mask)
+            attention_output,attended_arcs = self.attention(feedforward_output,attended_arcs, mask)
+            assert torch.isnan(attention_output).sum() == 0, ("attention_output",attention_output)
 
-            output = attention_output
-      #      heads = output[:,:,:self.head_dim]
-      #      children = output[:,:,self.head_dim:]
+            output =  self.layer_norm(self.dropout(attention_output) + feedforward_output)
 
-
-            heads_list.append(output[:,:,:self.head_dim])
-            child_list.append(output[:,:,self.head_dim:])
-            arcs_list.append(attended_arcs)
-        return heads_list, child_list, arcs_list
+            data_list.append(output)
+            attended_arcs_list.append(  attended_arcs)
+        return data_list, attended_arcs_list

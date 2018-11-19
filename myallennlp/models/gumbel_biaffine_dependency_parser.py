@@ -88,6 +88,7 @@ class GumbelBiaffineDependencyParser(Model):
                  arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
                  use_mst_decoding_for_validation: bool = True,
+                 refine_weight:float=1.0,
                  gumbel_head_t: float = 0,
                  dropout: float = 0.0,
                  input_dropout: float = 0.0,
@@ -102,6 +103,7 @@ class GumbelBiaffineDependencyParser(Model):
         self.num_iterations = num_iterations
         self.num_iterations_test = num_iterations_test
         self.gumbel_head_t = gumbel_head_t
+        self.refine_weight = refine_weight
         encoder_dim = encoder.get_output_dim()
 
         self.head_arc_feedforward = arc_feedforward or \
@@ -289,23 +291,16 @@ class GumbelBiaffineDependencyParser(Model):
         attended_arcs = self.arc_attention(head_arc_representation,
                                            child_arc_representation)
 
-        input = torch.cat([head_arc_representation, child_arc_representation], dim=-1)
         all_arc_nll, all_tag_nll = 0,0
         if self.arcs_refiner :
             num_iterations = self.num_iterations if self.training else self.num_iterations_test
-            data_list,attended_arcs_list = self.arcs_refiner( input,attended_arcs,mask, num_iterations )
+            attended_arcs_list = self.arcs_refiner( encoded_text,attended_arcs,mask, num_iterations )
             if not self.all_iteration_loss :
-                data_list, attended_arcs_list = [data_list[-1]],  [ attended_arcs_list[-1]]
+                attended_arcs_list =  [ attended_arcs_list[-1]]
         else:
             data_list, attended_arcs_list = [input],  [ attended_arcs]
-        for i, (data_representation,attended_arcs) in enumerate(zip(data_list,attended_arcs_list)):
+        for i, attended_arcs in enumerate(attended_arcs_list):
 
-            if not self.use_refiner_attention:
-                head_arc_representation =  self._dropout(data_representation[:,:,:self.head_arc_feedforward.get_output_dim()])
-                child_arc_representation =  self._dropout(data_representation[:,:,self.head_arc_feedforward.get_output_dim():])
-
-                attended_arcs = self.arc_attention(head_arc_representation,
-                                                   child_arc_representation)
             minus_inf = -1e8
             minus_mask = (1 - float_mask) * minus_inf
             attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
@@ -353,8 +348,12 @@ class GumbelBiaffineDependencyParser(Model):
                                                         head_tags=predicted_head_tags.long(),
                                                         mask=mask)
                 arc_nll, tag_nll = arc_nll/ n_data, tag_nll/ n_data
-                all_arc_nll =  all_arc_nll + arc_nll
-                all_tag_nll =  all_tag_nll + tag_nll
+                if i > 0:
+                    all_arc_nll =  all_arc_nll + self.refine_weight *arc_nll
+                    all_tag_nll =  all_tag_nll + self.refine_weight *tag_nll
+                else:
+                    all_arc_nll =  all_arc_nll + arc_nll
+                    all_tag_nll =  all_tag_nll + tag_nll
                 loss =  all_arc_nll + all_tag_nll
 
         output_dict = {

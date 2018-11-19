@@ -4,12 +4,14 @@ from torch.nn import Dropout, Linear
 import torch.nn as nn
 import torch.nn.functional as F
 
+from allennlp.modules.layer_norm import LayerNorm
 from allennlp.nn.util import masked_softmax, weighted_sum,masked_log_softmax,masked_normalize
 from allennlp.modules.seq2seq_encoders.seq2seq_encoder import Seq2SeqEncoder
 
 from myallennlp.modules.reparametrization.gumbel_softmax import masked_gumbel_softmax
 
-class SelfAttentionRefinment(Seq2SeqEncoder):
+@Seq2SeqEncoder.register("relaxed_gcn")
+class RelaxedGCN(Seq2SeqEncoder):
     # pylint: disable=line-too-long
     """
     This class implements the key-value scaled dot product attention mechanism
@@ -42,30 +44,25 @@ class SelfAttentionRefinment(Seq2SeqEncoder):
     def __init__(self,
                  num_heads: int,
                  input_dim: int,
-                 attention_dim: int,
                  values_dim: int,
-                 output_projection_dim: int = None,
-                 gumbel_head_t: float = 1.0) -> None:
-        super(SelfAttentionRefinment, self).__init__()
+                 attention_dropout_prob:float,
+                 residual:bool=False,
+                 residual_dropout_prob:float=0) -> None:
+        super(RelaxedGCN, self).__init__()
 
         self._num_heads = num_heads
         self._input_dim = input_dim
-        self._output_dim = output_projection_dim or input_dim
-        self._attention_dim = attention_dim
+        self._output_dim =  input_dim
         self._values_dim = values_dim
-        if attention_dim % num_heads != 0:
-            raise ValueError(f"Key size ({attention_dim}) must be divisible by the number of "
-                             f"attention heads ({num_heads}).")
+        self._residual = residual
+        self._attention_dropout = Dropout(attention_dropout_prob)
+        if residual:
 
-        if values_dim % num_heads != 0:
-            raise ValueError(f"Value size ({values_dim}) must be divisible by the number of "
-                             f"attention heads ({num_heads}).")
+            self.layer_norm = LayerNorm(input_dim)
+            self.dropout = Dropout(residual_dropout_prob)
 
-
-        self._combined_projection = Linear(input_dim, 2 * attention_dim + values_dim)
-        self._scale = (input_dim // num_heads) ** 0.5
+        self._combined_projection = Linear(input_dim, values_dim)
         self._output_projection = Linear(values_dim, self._output_dim) if values_dim != self._output_dim else lambda x: x
-        self.gumbel_head_t = gumbel_head_t
 
     def get_input_dim(self):
         return self._input_dim
@@ -73,20 +70,19 @@ class SelfAttentionRefinment(Seq2SeqEncoder):
     def get_output_dim(self):
         return self._output_dim
 
-    @overrides
-    def is_bidirectional(self):
-        return False
 
     @overrides
     def forward(self,  # pylint: disable=arguments-differ
                 inputs: torch.Tensor,
-                input_attended_arcs: torch.Tensor,
+                multi_headed_attention: torch.Tensor,
                 mask: torch.LongTensor = None) -> torch.FloatTensor:
         """
         Parameters
         ----------
         inputs : ``torch.FloatTensor``, required.
             A tensor of shape (batch_size, timesteps, input_dim)
+        multi_headed_attention : ``torch.FloatTensor``, required.
+            A tensor of shape (batch_size, num_heads, timesteps, input_dim)
         mask : ``torch.FloatTensor``, optional (default = None).
             A tensor of shape (batch_size, timesteps).
 
@@ -96,8 +92,8 @@ class SelfAttentionRefinment(Seq2SeqEncoder):
         where output_projection_dim = input_dim by default.
         """
         num_heads = self._num_heads
-
         batch_size, timesteps, _ = inputs.size()
+        multi_headed_attention = self._attention_dropout(multi_headed_attention).view(batch_size * num_heads, timesteps, timesteps)
         if mask is None:
             mask = inputs.new_ones(batch_size, timesteps)
 
@@ -106,42 +102,14 @@ class SelfAttentionRefinment(Seq2SeqEncoder):
 
 
         # Shape (batch_size, timesteps, 2 * attention_dim + values_dim)
-        combined_projection = self._combined_projection(inputs)
+        values = self._combined_projection(inputs)
 
-        # split by attention dim - if values_dim > attention_dim, we will get more
-        # than 3 elements returned. All of the rest are the values vector, so we
-        # just concatenate them back together again below.
-        queries, keys, *values = combined_projection.split(self._attention_dim, -1)
-        queries = queries.contiguous()
-        keys = keys.contiguous()
-        values = torch.cat(values, -1).contiguous()
         # Shape (num_heads * batch_size, timesteps, values_dim / num_heads)
         values_per_head = values.view(batch_size, timesteps, num_heads, int(self._values_dim/num_heads))
         values_per_head = values_per_head.transpose(1, 2).contiguous()
         values_per_head = values_per_head.view(batch_size * num_heads, timesteps, int(self._values_dim/num_heads))
 
-        # Shape (num_heads * batch_size, timesteps, attention_dim / num_heads)
-        queries_per_head = queries.view(batch_size, timesteps, num_heads, int(self._attention_dim/num_heads))
-        queries_per_head = queries_per_head.transpose(1, 2).contiguous()
-        queries_per_head = queries_per_head.view(batch_size * num_heads, timesteps, int(self._attention_dim/num_heads))
-
-        # Shape (num_heads * batch_size, timesteps, attention_dim / num_heads)
-        keys_per_head = keys.view(batch_size, timesteps, num_heads, int(self._attention_dim/num_heads))
-        keys_per_head = keys_per_head.transpose(1, 2).contiguous()
-        keys_per_head = keys_per_head.view(batch_size * num_heads, timesteps, int(self._attention_dim/num_heads))
-
-        # shape (num_heads * batch_size, timesteps, timesteps)
-        scaled_similarities = torch.bmm(queries_per_head, keys_per_head.transpose(1, 2)) / self._scale
-
-        # Take a weighted sum of the values with respect to the attention
-        # distributions for each element in the num_heads * batch_size dimension.
-        # shape (num_heads * batch_size, timesteps, values_dim/num_heads)
-        if self.training:
-            corrputed_attention = masked_gumbel_softmax(input_attended_arcs, tau=self.gumbel_head_t,mask=mask)
-        else:
-            corrputed_attention = masked_softmax(input_attended_arcs,mask=mask)
-
-        outputs = weighted_sum(values_per_head, corrputed_attention)
+        outputs = weighted_sum(values_per_head, multi_headed_attention)
 
         # Reshape back to original shape (batch_size, timesteps, values_dim)
         # shape (batch_size, num_heads, timesteps, values_dim/num_heads)
@@ -154,5 +122,6 @@ class SelfAttentionRefinment(Seq2SeqEncoder):
         # Project back to original input size.
         # shape (batch_size, timesteps, input_size)
         outputs = self._output_projection(outputs)
-
-        return outputs, scaled_similarities
+        if self._residual:
+            outputs = self.layer_norm( self.dropout(outputs )+ inputs)
+        return outputs

@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-
+from allennlp.nn.util import *
 def _sample_gumbel(shape, eps=1e-10, out=None):
     """
     Sample from Gumbel(0, 1)
@@ -10,7 +10,10 @@ def _sample_gumbel(shape, eps=1e-10, out=None):
     """
     U = out.resize_(shape).uniform_() if out is not None else torch.rand(shape)
     return - torch.log(eps - torch.log(U + eps))
+def add_gaussian(logits,sigma=1):
 
+    y = logits + logits.new().normal_(0,sigma)
+    return y
 def _gumbel_softmax_sample(logits, tau=1, eps=1e-10):
     """
     Draw a sample from the Gumbel-Softmax distribution
@@ -67,6 +70,27 @@ def masked_gumbel_softmax(logits, tau=0.8, mask=None, hard=False, eps=1e-10,dim=
         return result
 
 
+def masked_entropy(logits,  mask=None, dim=-1):
+    """
+    Sample from the Gumbel-Softmax distribution and optionally discretize.
+    Args:
+      logits: `[batch_size, n_class]` unnormalized log-probs
+      tau: non-negative scalar temperature
+      hard: if ``True``, take `argmax`, but differentiate w.r.t. soft sample y
+    Returns:
+      [batch_size, n_class] sample from the Gumbel-Softmax distribution.
+      If hard=True, then the returned sample will be one-hot, otherwise it will
+      be a probability distribution that sums to 1 across classes
+    Constraints:
+    - this implementation only works on batch_size x num_features tensor for now
+    based on
+    https://github.com/ericjang/gumbel-softmax/blob/3c8584924603869e90ca74ac20a6a03d99a91ef9/Categorical%20VAE.ipynb ,
+    (MIT license)
+    """
+    soft_max_masked = masked_softmax(logits, mask,dim)
+    log_soft_max_masked = masked_log_softmax(logits, mask,dim)
+    result = soft_max_masked * log_soft_max_masked
+    return -result.sum()
 
 def gumbel_softmax(logits, tau=0.8, hard=False, eps=1e-10):
     """

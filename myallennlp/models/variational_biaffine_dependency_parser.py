@@ -182,6 +182,63 @@ class varGumbelBiaffineDependencyParser(Model):
             latent_codes_delta = [delta.detach() for delta in latent_codes_delta]
             return [code+delta for code,delta in zip(latent_codes,latent_codes_delta)]
 
+    def iterative_refinement1(self,
+                       pos_tags: torch.Tensor,
+                       words: torch.Tensor,
+                       encoded_text: torch.Tensor,
+                       mask: torch.Tensor)->torch.Tensor:
+        encoded_list = [encoded_text]
+
+        with torch.enable_grad():
+
+            if isinstance(self.encoded_refiner,Seq2SeqEncoder):
+
+                for i in range(self.iterations):
+                    # Before the backward pass, use the optimizer object to zero all of the
+                    # gradients for the Tensors it will update (which are the learnable weights
+                    # of the model)
+
+                    encoded_text = encoded_text.detach()
+                    if self.stochastic:
+                        encoded_text = encoded_text +  torch.zeros_like(encoded_text).normal_(0, self.refine_lr)
+                    encoded_text.requires_grad = True
+                    if self.encoded_refiner:
+                        loss, n_data = self._generative_loss(pos_tags, words, encoded_text, mask)
+                        if loss / n_data > 1.0 and self.training and not self.debug: return encoded_list
+                        loss.backward()
+                        gradient_encoded_text = encoded_text.grad
+
+              #      encoded_text = self._dropout(encoded_text)
+                        gradient_and_code = torch.cat([encoded_text,gradient_encoded_text],dim=2)
+                        if self.update:
+                            encoded_text = encoded_text + self.encoded_refiner(gradient_and_code,mask=mask)
+                        else:
+                            encoded_text = self.encoded_refiner(gradient_and_code,mask=mask)
+                    encoded_list.append(encoded_text)
+
+
+            else:
+                encoded_text = encoded_text.detach()
+                inc = torch.zeros_like(encoded_text, requires_grad=True)
+                optimizer = torch.optim.SGD([inc],lr=self.refine_lr)
+                for i in range(self.iterations):
+               #     print ("before",encoded_text)
+                    optimizer.zero_grad()
+
+                    if self.stochastic:
+                        inc = inc +  torch.zeros_like(inc).normal_(0, 1e-3)
+                    loss, n_data = self._generative_loss(pos_tags, words, encoded_text+inc, mask)
+                #    if loss / n_data > 1.0 and self.training: return encoded_list
+                    loss.backward()
+                    # Calling the step function on an Optimizer makes an update to its parameters
+                    optimizer.step()
+              #      print ("after",encoded_text)
+                    encoded_list.append(encoded_text+inc)
+            if self.debug:
+                for i in range(self.iterations):
+                    diff = encoded_list[i]-encoded_list[i+1]
+                    print (i,torch.sum(diff*diff))
+            return encoded_list
     def get_loss(self,
                  latent_codes_mean: Tuple[torch.Tensor],
                  latent_codes_delta: Tuple[torch.Tensor],

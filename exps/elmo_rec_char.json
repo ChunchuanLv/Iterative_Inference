@@ -1,11 +1,16 @@
 {
     "dataset_reader": {
         "type": "universal_dependencies",
-        "use_language_specific_pos": true
+        "use_language_specific_pos": true,
+          "token_indexers": {
+              "elmo": {
+                  "type": "elmo_characters"
+              }
+          }
     },
     "iterator": {
         "type": "bucket",
-        "batch_size": 128,
+        "batch_size": 32,
         "sorting_keys": [
             [
                 "words",
@@ -14,36 +19,47 @@
         ]
     },
     "model": {
-        "type": "gumbel_biaffine_parser",
+        "type": "elmo_biaffine_parser",
         "arc_representation_dim": 500,
-        "dropout": 0.3,
-        "gumbel_head_t": 1.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
             "hidden_size": 400,
-            "input_size": 200,
-            "num_layers": 1,
+            "input_size": 1124,
+            "num_layers": 2,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
         },
-        "all_iteration_loss":true,
-        "use_refiner_attention":true,
-         "num_iterations": 5,
-         "num_iterations_test": 5,
-        "refine_weight":1.0,
-
-        "arcs_refiner":{
-            "type": "stacked_self_attention_refiner",
+      "refine_lr":1e-3,
+      "iterations": 6,
+      "update":false,
+        "encoded_refiner": {
+            "type": "stacked_self_attention",
             "hidden_dim": 800,
             "input_dim": 800,
-            "projection_dim":500,
+            "projection_dim":800,
             "feedforward_hidden_dim":800,
-            "dropout_prob": 0.3,
-            "num_layers": 1,
-            "num_attention_heads": 2,
-            "gumbel_head_t": 1.0,
-            "gumbel_at_test": false
+            "num_attention_heads": 8,
+            "num_layers": 2
         },
+      "hidden_prior": {
+        "type": "lstm",
+        "input_size": 800,
+        "hidden_size": 800,
+        "num_layers": 1,
+        "bidirectional": false,
+        "dropout": 0.2
+      },
+
+        "char_decoder": {
+            "type": "augmented_lstm",
+            "hidden_size": 200,
+            "input_size": 100,
+            "recurrent_dropout_probability": 0.3,
+            "use_highway": true
+        },
+        "auto_enc": 0.1,
+        "dropout": 0.3,
+        "gumbel_head_t": 1.0,
         "initializer": [
             [
                 ".*feedforward.*weight",
@@ -94,21 +110,22 @@
                 }
             ]
         ],
+        "drop_data":false,
         "input_dropout": 0.3,
         "pos_tag_embedding": {
             "embedding_dim": 100,
             "sparse": true,
             "vocab_namespace": "pos"
         },
-        "tag_representation_dim": 100,
+        "tag_representation_dim": 200,
         "text_field_embedder": {
-            "tokens": {
-                "type": "embedding",
-                "embedding_dim": 100,
-                "pretrained_file": "/disk/scratch/s1544871/sskip.eng.100.gz",
-                "sparse": true,
-                "trainable": true
-            }
+          "elmo": {
+            "type": "elmo_token_embedder",
+            "options_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_options.json",
+            "weight_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+            "do_layer_norm": false,
+            "dropout": 0
+          }
         },
         "use_mst_decoding_for_validation": true
     },
@@ -117,7 +134,7 @@
     "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
     "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 2,
+        "cuda_device": 1,
         "grad_norm": 5,
         "num_epochs": 100,
         "optimizer": {
@@ -127,8 +144,8 @@
                 0.9
             ]
         },
-        "num_serialized_models_to_keep":2,
-        "patience": 50,
-        "validation_metric": "+LAS"
+        "patience": 20,
+        "validation_metric": "+LAS",
+        "num_serialized_models_to_keep":-1
     }
 }

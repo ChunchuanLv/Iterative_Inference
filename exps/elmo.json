@@ -10,7 +10,7 @@
     },
     "iterator": {
         "type": "bucket",
-        "batch_size": 2,
+        "batch_size": 64,
         "sorting_keys": [
             [
                 "words",
@@ -29,13 +29,8 @@
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
         },
-        "auto_enc": true,
+        "auto_enc": false,
         "dropout": 0.3,
-        "iterations": 0,
-        "latent_t": 10,
-        "refine_lr":1e-1,
-        "refine_with_mst": false,
-        "refine_train":false,
         "gumbel_head_t": 1.0,
         "initializer": [
             [

@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.nn.modules import Dropout
 import numpy
 
-from allennlp.common.checks import check_dimensions_match
+from allennlp.common.checks import check_dimensions_match, ConfigurationError
 from allennlp.data import Vocabulary
 from allennlp.modules import Seq2SeqEncoder, TextFieldEmbedder, Embedding, InputVariationalDropout
 from allennlp.modules.matrix_attention.bilinear_matrix_attention import BilinearMatrixAttention
@@ -19,7 +19,9 @@ from allennlp.nn.util import get_text_field_mask, get_range_vector
 from allennlp.nn.util import get_device_of, masked_log_softmax, get_lengths_from_binary_sequence_mask
 from allennlp.nn.chu_liu_edmonds import decode_mst
 from allennlp.training.metrics import AttachmentScores
-from myallennlp.modules.reparametrization import gumbel_softmax
+from myallennlp.modules.reparametrization import gumbel_softmax,data_dropout,masked_entropy
+from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
+from myallennlp.metric import IterativeAttachmentScores
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -84,19 +86,29 @@ class ELMOBiaffineDependencyParser(Model):
                  arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
                  use_mst_decoding_for_validation: bool = True,
+                 char_decoder: Seq2SeqEncoder = None,
+                 hidden_prior: Seq2SeqEncoder = None,
+                 encoded_refiner: Seq2SeqEncoder = None,
+                 update:bool=False,
                  gumbel_head_t: float = 0,
                  dropout: float = 0.0,
-                 auto_enc:bool = False,
+                 auto_enc:float = 0,
                  input_dropout: float = 0.0,
                  iterations: int = 0,
                  latent_t: float = 0.1,
                  refine_train:bool = False,
-                 refine_with_mst: bool=False,
-                 refine_lr: float = 1e-3,
+                 drop_data:bool = False,
+                 refine_with_gradient: bool=False,
+                 refine_lr: float = 1e-2,
+                 debug:bool=False,
+                 stochastic:bool=False,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(ELMOBiaffineDependencyParser, self).__init__(vocab, regularizer)
-
+        self.update = update
+        self.debug = debug
+        self.stochastic = stochastic
+        self.encoded_refiner = encoded_refiner
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
         self.iterations = iterations
@@ -104,7 +116,8 @@ class ELMOBiaffineDependencyParser(Model):
         self.latent_t = latent_t
         self.refine_train = refine_train
         self.refine_lr = refine_lr
-        self.refine_with_mst = refine_with_mst
+        self.refine_with_gradient = refine_with_gradient
+        self.drop_data = drop_data
         encoder_dim = encoder.get_output_dim()
 
         self.head_arc_feedforward = arc_feedforward or \
@@ -128,23 +141,30 @@ class ELMOBiaffineDependencyParser(Model):
         self.tag_bilinear = torch.nn.modules.Bilinear(tag_representation_dim,
                                                       tag_representation_dim,
                                                       num_labels)
-        self.pos_tag_embedding = pos_tag_embedding
+        self._pos_tag_embedding = pos_tag_embedding
         self._dropout = InputVariationalDropout(dropout)
         self._input_dropout = Dropout(input_dropout)
         self._head_sentinel = torch.nn.Parameter(torch.randn([1, 1, encoder.get_output_dim()]))
 
-        representation_dim = text_field_embedder.get_output_dim()
+        representation_dim = text_field_embedder.get_output_dim() + pos_tag_embedding.get_output_dim()
 
         self.auto_enc = auto_enc
         if auto_enc:
-            num_words = self.vocab.get_vocab_size()
 
-            print ("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!self.vocab._token_to_index",num_words)
-            for name in self.vocab._token_to_index:
-                print(name,len(self.vocab._token_to_index))
-            self.char_score = FeedForward(self.encoder.get_output_dim(), 1,
-                                          num_words,
-                                                         Activation.by_name("linear")())
+            if char_decoder:
+                assert char_decoder.is_bidirectional() == False
+                self.char_decoder = char_decoder
+                self.char_emb = torch.nn.Embedding(num_embeddings=262,embedding_dim=char_decoder.get_input_dim(),padding_idx=0)
+                self.char_initial = FeedForward(self.encoder.get_output_dim(), 1,
+                                                char_decoder.get_input_dim(),     #max_characters_per_token x n_characters  +char_decoder._module.hidden_size
+                                                             Activation.by_name("linear")())
+
+                self.char_score = FeedForward(char_decoder.get_output_dim(),1,262,Activation.by_name("linear")())
+            else:
+                self.char_decoder = FeedForward(self.encoder.get_output_dim(), 1,
+                                              50*262,     #max_characters_per_token x n_characters
+                                                             Activation.by_name("linear")())
+            self.hidden_prior = hidden_prior
             num_pos = self.vocab.get_vocab_size("pos")
             self.pos_score = FeedForward(self.encoder.get_output_dim(), 2,
                                           [representation_dim,num_pos],
@@ -166,77 +186,72 @@ class ELMOBiaffineDependencyParser(Model):
         logger.info(f"Found POS tags correspoding to the following punctuation : {punctuation_tag_indices}. "
                     "Ignoring words with these POS tags for evaluation.")
 
-        self._attachment_scores = AttachmentScores()
+        self._attachment_scores = IterativeAttachmentScores()
         initializer(self)
 
 
     def iterative_refinement(self,
-                   latent_codes:Tuple[torch.Tensor],
-                    mask:torch.Tensor)->Tuple[torch.Tensor]:
-        with torch.enable_grad():
-            latent_codes_detached = [code.detach() for code in latent_codes]
-            latent_codes_delta = [torch.zeros_like(code, requires_grad=True) for code in latent_codes]
+                       pos_tags: torch.Tensor,
+                       words: torch.Tensor,
+                       encoded_text: torch.Tensor,
+                       mask: torch.Tensor,
+                         head_indices: torch.Tensor = None,
+                         head_tags: torch.Tensor = None    )->List[torch.Tensor]:  #[input,[gold], output ]
+        encoded_list = [encoded_text]
 
-            optimizer = torch.optim.SGD(latent_codes_delta,lr=self.refine_lr )
-            for i in range(self.iterations):
+        with torch.enable_grad():
+            encoded_text = encoded_text.detach()
+            if head_indices is not None:
+                inc = torch.zeros_like(encoded_text, requires_grad=True)
+                optimizer = torch.optim.Adam([inc],lr=self.refine_lr)
+                for i in range(self.iterations):
+               #     print ("before",encoded_text)
+                    optimizer.zero_grad()
+
+                    loss, n_data = self._construct_loss_from_encoded_text(pos_tags, words, head_indices, head_tags,
+                           encoded_text,
+                           mask)
+                #    if loss / n_data > 1.0 and self.training: return encoded_list
+                    loss.backward()
+                    # Calling the step function on an Optimizer makes an update to its parameters
+                    optimizer.step()
+              #      print ("after",encoded_text)
+                encoded_list.append((encoded_text+inc).detach())
+
                 # Before the backward pass, use the optimizer object to zero all of the
                 # gradients for the Tensors it will update (which are the learnable weights
                 # of the model)
 
-                loss = self.get_loss(latent_codes_detached,latent_codes_delta,mask)
-
-                optimizer.zero_grad()
-
-                # Backward pass: compute gradient of the loss with respect to model parameters
+            if self.refine_with_gradient:
+             #   if self.stochastic:
+                #    encoded_text = encoded_text +  torch.zeros_like(encoded_text).normal_(0, self.refine_lr)
+                encoded_text.requires_grad = True
+                loss, n_data = self._generative_loss(pos_tags, words, encoded_text, mask)
                 loss.backward()
+                gradient_encoded_text = encoded_text.grad
 
-                # Calling the step function on an Optimizer makes an update to its parameters
-                optimizer.step()
-            latent_codes_delta = [delta.detach() for delta in latent_codes_delta]
-            return [code+delta for code,delta in zip(latent_codes,latent_codes_delta)]
+      #      encoded_text = self._dropout(encoded_text)
+                gradient_and_code = torch.cat([encoded_text,gradient_encoded_text],dim=2)
+                if self.update:
+                    encoded_text = encoded_text + self.encoded_refiner(gradient_and_code,mask=mask)
+                else:
+                    encoded_text =  self.encoded_refiner(gradient_and_code,mask=mask)
+            else:
+                encoded_text = encoded_list[0]
+                if self.update:
+                    encoded_text = encoded_text + self.encoded_refiner(encoded_text,mask=mask)
+                else:
+                    encoded_text =  self.encoded_refiner(encoded_text,mask=mask)
+            encoded_list.append(encoded_text)
 
-    def get_loss(self,
-                 latent_codes_mean: Tuple[torch.Tensor],
-                 latent_codes_delta: Tuple[torch.Tensor],
-                    mask:torch.Tensor):
+
+            if self.debug:
+                for i in range(self.iterations):
+                    diff = encoded_list[i]-encoded_list[i+1]
+                    print (i,torch.sum(diff*diff))
+            return encoded_list
 
 
-        # shape (batch_size, sequence_length, dim)
-        head_arc_representation_mean,child_arc_representation_mean,head_tag_representation_mean,child_tag_representation_mean = latent_codes_mean
-        head_arc_representation_delta,child_arc_representation_delta,head_tag_representation_delta,child_tag_representation_delta = latent_codes_delta
-
-
-        head_arc_representation = head_arc_representation_mean + head_arc_representation_delta
-        child_arc_representation = child_arc_representation_mean + child_arc_representation_delta
-        head_tag_representation = head_tag_representation_mean + head_tag_representation_delta
-        child_tag_representation = child_tag_representation_mean + child_tag_representation_delta
-        # shape (batch_size, sequence_length, sequence_length)
-        attended_arcs = self.arc_attention(head_arc_representation,
-                                           child_arc_representation)
-        float_mask = mask.float()
-        minus_inf = -1e8
-        minus_mask = (1 - float_mask) * minus_inf
-        attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
-        if self.refine_with_mst:
-            predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
-                                                                    child_tag_representation,
-                                                                    attended_arcs,
-                                                                    mask)
-
-        else:
-            predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
-                                                                       child_tag_representation,
-                                                                       attended_arcs,
-                                                                       mask)
-        arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                        child_tag_representation=child_tag_representation,
-                                                        attended_arcs=attended_arcs,
-                                                        head_indices=predicted_heads,
-                                                        head_tags=predicted_head_tags,
-                                                        mask=mask)
-        loss = arc_nll + tag_nll + sum([ (delta*delta* (1 - float_mask).unsqueeze(2)).sum() for delta in latent_codes_delta])/(2*self.latent_t**2)
-
-        return loss
     @overrides
     def forward(self,  # type: ignore
                 words: Dict[str, torch.LongTensor],
@@ -288,12 +303,20 @@ class ELMOBiaffineDependencyParser(Model):
         mask : ``torch.LongTensor``
             A mask denoting the padded elements in the batch.
         """
-        embedded_text_input = self.text_field_embedder(words)
+        raw_embedded_text_input = self.text_field_embedder(words)
         mask = get_text_field_mask(words)
+        if pos_tags is not None and self._pos_tag_embedding is not None:
+            if self.training and self.drop_data:
+                pos_tags = data_dropout(pos_tags,self._input_dropout.p)
+            embedded_pos_tags = self._pos_tag_embedding(pos_tags)
+            embedded_text_input = torch.cat([raw_embedded_text_input, embedded_pos_tags], -1)
+        elif self._pos_tag_embedding is not None:
+            raise ConfigurationError("Model uses a POS embedding, but no POS tags were passed.")
+
         embedded_text_input = self._input_dropout(embedded_text_input)
         encoded_text = self.encoder(embedded_text_input, mask)
 
-        batch_size, _, encoding_dim = encoded_text.size()
+        batch_size, sequence_length, encoding_dim = encoded_text.size()
 
         head_sentinel = self._head_sentinel.expand(batch_size, 1, encoding_dim)
         # Concatenate the head sentinel onto the sentence representation.
@@ -304,80 +327,89 @@ class ELMOBiaffineDependencyParser(Model):
         if head_tags is not None:
             head_tags = torch.cat([head_tags.new_zeros(batch_size, 1), head_tags], 1)
         float_mask = mask.float()
-        encoded_text = self._dropout(encoded_text)
-        if self.auto_enc:
-            word_score = self.word_score(encoded_text)
-            pos_score = self.pos_score(encoded_text)
-        # shape (batch_size, sequence_length, arc_representation_dim)
-        head_arc_representation = self._dropout(self.head_arc_feedforward(encoded_text))
-        child_arc_representation = self._dropout(self.child_arc_feedforward(encoded_text))
+        loss = 0
+        if self.iterations and self.auto_enc and not ( self.training and self.encoded_refiner is  None) or self.debug:
+            if self.training:
+                encoded_text_list = self.iterative_refinement(  pos_tags,words["elmo"],encoded_text,mask,head_indices,head_tags)
 
-        # shape (batch_size, sequence_length, tag_representation_dim)
-        head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
-        child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
+                diff = (encoded_text[-1]-encoded_text[-2]) * float_mask.unsqueeze(-1)
 
-        if self.training or not self.use_mst_decoding_for_validation:
-            # shape (batch_size, sequence_length, sequence_length)
-            attended_arcs = self.arc_attention(head_arc_representation,
-                                               child_arc_representation)
-
-            minus_inf = -1e8
-            minus_mask = (1 - float_mask) * minus_inf
-            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
-            predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
-                                                                       child_tag_representation,
-                                                                       attended_arcs,
-                                                                       mask)
+                valid_positions = mask.sum() - batch_size
+                reg_loss = (diff * diff).sum()
+                loss = loss + self.auto_enc*reg_loss/valid_positions.float()
+            else:
+                encoded_text_list = self.iterative_refinement(  pos_tags,words["elmo"],encoded_text,mask)
         else:
-            # shape (batch_size, sequence_length, sequence_length)
-            attended_arcs = self.arc_attention(head_arc_representation,
-                                               child_arc_representation)
+            encoded_text_list = [encoded_text]
 
-            minus_inf = -1e8
-            minus_mask = (1 - float_mask) * minus_inf
-            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
-            predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
-                                                                    child_tag_representation,
-                                                                    attended_arcs,
-                                                                    mask)
+        for i,encoded_text in enumerate(encoded_text_list):
+            encoded_text = self._dropout(encoded_text)
+            # shape (batch_size, sequence_length, arc_representation_dim)
+            head_arc_representation = self._dropout(self.head_arc_feedforward(encoded_text))
+            child_arc_representation = self._dropout(self.child_arc_feedforward(encoded_text))
+
+            # shape (batch_size, sequence_length, tag_representation_dim)
+            head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
+            child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
+
+            if self.training or not self.use_mst_decoding_for_validation:
+                # shape (batch_size, sequence_length, sequence_length)
+                attended_arcs = self.arc_attention(head_arc_representation,
+                                                   child_arc_representation)
+
+                minus_inf = -1e8
+                minus_mask = (1 - float_mask) * minus_inf
+                attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+                predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
+                                                                           child_tag_representation,
+                                                                           attended_arcs,
+                                                                           mask)
+            else:
+                # shape (batch_size, sequence_length, sequence_length)
+                attended_arcs = self.arc_attention(head_arc_representation,
+                                                   child_arc_representation)
+
+                minus_inf = -1e8
+                minus_mask = (1 - float_mask) * minus_inf
+                attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+                predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
+                                                                        child_tag_representation,
+                                                                        attended_arcs,
+                                                                        mask)
 
 
-        if head_indices is not None and head_tags is not None:
+            if head_indices is not None and head_tags is not None:
 
-            arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                            child_tag_representation=child_tag_representation,
-                                                            attended_arcs=attended_arcs,
-                                                            head_indices=head_indices,
-                                                            head_tags=head_tags,
-                                                            mask=mask)
-            loss = (arc_nll + tag_nll  )/ n_data
+                arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                                child_tag_representation=child_tag_representation,
+                                                                attended_arcs=attended_arcs,
+                                                                head_indices=head_indices,
+                                                                head_tags=head_tags,
+                                                                mask=mask)
+                loss = loss + (arc_nll + tag_nll  )/ n_data
 
+
+                evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
+                # We calculate attatchment scores for the whole sentence
+                # but excluding the symbolic ROOT token at the start,
+                # which is why we start from the second element in the sequence.
+                self._attachment_scores(predicted_heads[:, 1:],
+                                        predicted_head_tags[:, 1:],
+                                        head_indices[:, 1:],
+                                        head_tags[:, 1:],
+                                        i,
+                                        evaluation_mask)
+            else:
+                arc_nll, tag_nll , n_data = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                        child_tag_representation=child_tag_representation,
+                                                        attended_arcs=attended_arcs,
+                                                        head_indices=predicted_heads.long(),
+                                                        head_tags=predicted_head_tags.long(),
+                                                        mask=mask)
+                loss = loss + ( arc_nll + tag_nll )/ n_data
             if self.auto_enc:
-                pos_nll , words_nll = self._auto_enc_loss(pos_tags,pos_score,words["elmo"],word_score,mask)
-                loss = loss + (pos_nll + words_nll  )/ n_data
-
-
-
-            evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
-            # We calculate attatchment scores for the whole sentence
-            # but excluding the symbolic ROOT token at the start,
-            # which is why we start from the second element in the sequence.
-            self._attachment_scores(predicted_heads[:, 1:],
-                                    predicted_head_tags[:, 1:],
-                                    head_indices[:, 1:],
-                                    head_tags[:, 1:],
-                                    evaluation_mask)
-        else:
-            arc_nll, tag_nll , n_data = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                    child_tag_representation=child_tag_representation,
-                                                    attended_arcs=attended_arcs,
-                                                    head_indices=predicted_heads.long(),
-                                                    head_tags=predicted_head_tags.long(),
-                                                    mask=mask)
-            loss = ( arc_nll + tag_nll )/ n_data
-            if self.auto_enc:
-                pos_nll , words_nll = self._auto_enc_loss(pos_tags,pos_score,words["elmo"],word_score,mask)
-                loss = loss + (pos_nll + words_nll  )/ n_data
+                rec_loss= self._auto_enc_loss(pos_tags,words["elmo"],encoded_text,mask)
+                loss = loss + self.auto_enc * rec_loss / n_data
 
         output_dict = {
                 "heads": predicted_heads,
@@ -412,24 +444,333 @@ class ELMOBiaffineDependencyParser(Model):
         output_dict["predicted_dependencies"] = head_tag_labels
         output_dict["predicted_heads"] = head_indices
         return output_dict
-    def _auto_enc_loss(self,
-                        pos_tags: torch.Tensor,
-                        pos_logits: torch.Tensor,
-                        words : torch.Tensor,
-                        words_logits: torch.Tensor,
-                        mask: torch.Tensor):
+
+    def _construct_loss_from_encoded_text(self,
+                       pos_tags: torch.Tensor,
+                       words: torch.Tensor,
+                        head_indices: torch.Tensor,
+                        head_tags: torch.Tensor,
+                       encoded_text: torch.Tensor,
+                       mask: torch.Tensor):
 
         float_mask = mask.float()
 
+        head_arc_representation = self._dropout(self.head_arc_feedforward(encoded_text))
+        child_arc_representation = self._dropout(self.child_arc_feedforward(encoded_text))
+
+        # shape (batch_size, sequence_length, tag_representation_dim)
+        head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
+        child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
+
+        # shape (batch_size, sequence_length, sequence_length)
+        attended_arcs = self.arc_attention(head_arc_representation,
+                                           child_arc_representation)
+
+
+        minus_inf = -1e8
+        minus_mask = (1 - float_mask) * minus_inf
+        attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+
+        arc_nll, tag_nll, n_data = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                                child_tag_representation=child_tag_representation,
+                                                                attended_arcs=attended_arcs,
+                                                                head_indices=head_indices,
+                                                                head_tags=head_tags,
+                                                                mask=mask)
+
+        batch_size, sequence_length, encoding_dim = encoded_text.size()
+        sequence_length = sequence_length - 1
+
+
+        if isinstance(self.char_decoder, FeedForward):
+            words_logits = self.char_decoder(encoded_text).view(batch_size, sequence_length + 1, 50, -1)[:, 1:]
+        else:
+            # shape (batch_size, sequence_length, 49, dim)
+            elmo_chars = words
+            if self.training and self.drop_data:
+                elmo_chars = data_dropout(elmo_chars, self._input_dropout.p)
+            char_emb = self.char_emb(elmo_chars)[:, :, 1:, :]
+            # shape (batch_size, sequence_length, 1, dim)
+            initial = self.char_initial(encoded_text[:, :sequence_length]).unsqueeze(2)
+
+            #   print ("initial",initial.size())
+            #     print ("char_emb",char_emb.size())
+            # shape (batch_size * sequence_length, 50, dim)
+            char_input = torch.cat([initial, char_emb], dim=2).view(batch_size * (sequence_length), 50, -1)
+            char_mask = ((char_input > 0).long().sum(dim=-1) > 0).long()
+
+            # shape (batch_size * sequence_length, 50, dim)
+            char_out = self.char_decoder(char_input, mask=char_mask)
+
+            # shape (batch_size * sequence_length, 50, 262)
+            words_logits = self.char_score(char_out).view(batch_size, sequence_length, 50, -1)
+
+        # shape (batch_size, sequence_length, n_pos)
+        pos_logits = self.pos_score(encoded_text)
+
+        prior_encoded = self.hidden_prior(encoded_text, mask)
+
+
+
         normalised_pos_tag_logits = masked_log_softmax(pos_logits, mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
-        normalised_pos_tag_logits = normalised_pos_tag_logits[:,1:]
-        pos_nll = F.nll_loss(normalised_pos_tag_logits.transpose(1,2), pos_tags, reduction="sum")
+        normalised_pos_tag_logits = normalised_pos_tag_logits[:, 1:]
+        pos_nll = F.nll_loss(normalised_pos_tag_logits.transpose(1, 2), pos_tags, reduction="sum")
 
-        normalised_words_logits = masked_log_softmax(words_logits, mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
-        normalised_words_logits = normalised_words_logits[:,1:]
-        words_nll = F.nll_loss(normalised_words_logits.transpose(1,2), words, reduction="sum")
+        mask = mask[:, 1:]
+        float_mask = mask.float()
+        encoded_text = encoded_text[:, 1:]
+        prior_encoded = prior_encoded[:, :-1]
+        #  print ("prior_encoded",prior_encoded.size())
+        #     print ("encoded_text",encoded_text.size())
+        #    print ("float_mask",float_mask.size())
+        diff = (encoded_text - prior_encoded) * float_mask.unsqueeze(-1)
 
-        return pos_nll,words_nll
+        reg_loss = (diff * diff).sum()
+
+        batch, seq_len, _ = words.size()
+
+        normalised_words_logits = masked_log_softmax(words_logits,
+                                                     mask.unsqueeze(-1).unsqueeze(-1)) * float_mask.unsqueeze(
+            -1).unsqueeze(-1)
+        normalised_words_logits = normalised_words_logits
+        words_nll = F.nll_loss(normalised_words_logits.permute(0, 3, 1, 2), words, reduction="sum")
+
+
+
+
+
+        return self.auto_enc*(pos_nll + words_nll + reg_loss) + arc_nll + tag_nll,n_data
+
+    def _generative_loss(self,
+                       pos_tags: torch.Tensor,
+                       words: torch.Tensor,
+                       encoded_text: torch.Tensor,
+                       mask: torch.Tensor,
+                        head_indices: torch.Tensor  =None  ,
+                        head_tags: torch.Tensor = None,
+    ):
+        '''
+
+        :param pos_tags:
+        :param pos_logits:
+        :param encoded_text: shape (batch x seq_len + 1 x dim)
+        :param prior_encoded: shape (batch x seq_len + 1 x dim)
+        :param words:   shape (batch x seq_len + 1 x 50)
+        :param words_logits: shape (batch x seq_len x 50 x 262)
+        :param mask: shape (batch , seq_len + 1)
+        :return:
+        '''
+
+        float_mask = mask.float()
+
+        batch_size, sequence_length, encoding_dim = encoded_text.size()
+        if head_indices is not None:
+            head_arc_representation = self.head_arc_feedforward(encoded_text)
+
+
+            child_arc_representation = self.child_arc_feedforward(encoded_text)
+
+
+            # shape (batch_size, sequence_length, tag_representation_dim)
+            head_tag_representation = self.head_tag_feedforward(encoded_text)
+            child_tag_representation = self.child_tag_feedforward(encoded_text)
+
+
+            if self.training:
+                head_arc_representation = self._dropout(head_arc_representation)
+                child_arc_representation = self._dropout(child_arc_representation)
+                head_tag_representation = self._dropout(head_tag_representation)
+                child_tag_representation = self._dropout(child_tag_representation)
+
+            # shape (batch_size, sequence_length, sequence_length)
+            attended_arcs = self.arc_attention(head_arc_representation,
+                                               child_arc_representation)
+
+
+            minus_inf = -1e8
+            minus_mask = (1 - float_mask) * minus_inf
+            attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+
+            range_vector = get_range_vector(batch_size, get_device_of(attended_arcs)).unsqueeze(1)
+            # shape (batch_size, sequence_length, sequence_length)
+            normalised_arc_logits = masked_log_softmax(attended_arcs,
+                                                       mask) * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
+
+            # shape (batch_size, sequence_length, num_head_tags)
+            head_tag_logits = self._get_head_tags(head_tag_representation, child_tag_representation, head_indices)
+            normalised_head_tag_logits = masked_log_softmax(head_tag_logits,
+                                                            mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
+            # index matrix with shape (batch, sequence_length)
+            timestep_index = get_range_vector(sequence_length, get_device_of(attended_arcs))
+            child_index = timestep_index.view(1, sequence_length).expand(batch_size, sequence_length).long()
+            # shape (batch_size, sequence_length)
+            arc_loss = normalised_arc_logits[range_vector, child_index, head_indices]
+            tag_loss = normalised_head_tag_logits[range_vector, child_index, head_tags]
+            # We don't care about predictions for the symbolic ROOT token's head,
+            # so we remove it from the loss.
+            arc_loss = arc_loss[:, 1:]
+            tag_loss = tag_loss[:, 1:]
+
+            # The number of valid positions is equal to the number of unmasked elements minus
+            # 1 per sequence in the batch, to account for the symbolic HEAD token.
+
+            arc_nll = -arc_loss.sum()
+            tag_nll = -tag_loss.sum()
+
+
+            arcs_entropy,tags_entropy = arc_nll,tag_nll
+        else:
+            arcs_entropy,tags_entropy = 0,0
+
+        sequence_length = sequence_length - 1
+
+        valid_positions = mask.sum() - batch_size
+    #    return arcs_entropy+tags_entropy,valid_positions.float()
+        self.char_decoder.train()
+        self.hidden_prior.train()
+
+        if isinstance(self.char_decoder, FeedForward):
+            words_logits = self.char_decoder(encoded_text).view(batch_size, sequence_length + 1, 50, -1)[:, 1:]
+        else:
+            # shape (batch_size, sequence_length, 49, dim)
+            elmo_chars = words
+            if self.training and self.drop_data:
+                elmo_chars = data_dropout(elmo_chars, self._input_dropout.p)
+            char_emb = self.char_emb(elmo_chars)[:, :, 1:, :]
+            # shape (batch_size, sequence_length, 1, dim)
+            initial = self.char_initial(encoded_text[:, :sequence_length]).unsqueeze(2)
+
+            #   print ("initial",initial.size())
+            #     print ("char_emb",char_emb.size())
+            # shape (batch_size * sequence_length, 50, dim)
+            char_input = torch.cat([initial, char_emb], dim=2).view(batch_size * (sequence_length), 50, -1)
+            char_mask = ((char_input > 0).long().sum(dim=-1) > 0).long()
+
+            # shape (batch_size * sequence_length, 50, dim)
+            char_out = self.char_decoder(char_input, mask=char_mask)
+
+            # shape (batch_size * sequence_length, 50, 262)
+            words_logits = self.char_score(char_out).view(batch_size, sequence_length, 50, -1)
+
+        # shape (batch_size, sequence_length, n_pos)
+        pos_logits = self.pos_score(encoded_text)
+
+        prior_encoded = self.hidden_prior(encoded_text, mask)
+
+
+
+        normalised_pos_tag_logits = masked_log_softmax(pos_logits, mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
+        normalised_pos_tag_logits = normalised_pos_tag_logits[:, 1:]
+        pos_nll = F.nll_loss(normalised_pos_tag_logits.transpose(1, 2), pos_tags, reduction="sum")
+
+        mask = mask[:, 1:]
+        float_mask = mask.float()
+        encoded_text = encoded_text[:, 1:]
+        prior_encoded = prior_encoded[:, :-1]
+        #  print ("prior_encoded",prior_encoded.size())
+        #     print ("encoded_text",encoded_text.size())
+        #    print ("float_mask",float_mask.size())
+        diff = (encoded_text - prior_encoded) * float_mask.unsqueeze(-1)
+
+        reg_loss = (diff * diff).sum()
+
+        batch, seq_len, _ = words.size()
+
+        normalised_words_logits = masked_log_softmax(words_logits,
+                                                     mask.unsqueeze(-1).unsqueeze(-1)) * float_mask.unsqueeze(
+            -1).unsqueeze(-1)
+        normalised_words_logits = normalised_words_logits
+        words_nll = F.nll_loss(normalised_words_logits.permute(0, 3, 1, 2), words, reduction="sum")
+
+
+
+
+        if not self.training:
+            self.char_decoder.eval()
+            self.hidden_prior.eval()
+        return reg_loss + arcs_entropy+tags_entropy,valid_positions.float()
+
+        return pos_nll + words_nll + reg_loss + arcs_entropy+tags_entropy,valid_positions.float()
+
+    def _auto_enc_loss(self,
+                        pos_tags: torch.Tensor,
+                        words : torch.Tensor,
+                       encoded_text,
+                        mask: torch.Tensor):
+        '''
+
+        :param pos_tags:
+        :param pos_logits:
+        :param encoded_text: shape (batch x seq_len + 1 x dim)
+        :param prior_encoded: shape (batch x seq_len + 1 x dim)
+        :param words:   shape (batch x seq_len + 1 x 50)
+        :param words_logits: shape (batch x seq_len x 50 x 262)
+        :param mask: shape (batch , seq_len + 1)
+        :return:
+        '''
+        float_mask = mask.float()
+
+        batch_size, sequence_length, encoding_dim = encoded_text.size()
+        sequence_length = sequence_length - 1
+
+
+        if isinstance(self.char_decoder, FeedForward):
+            words_logits = self.char_decoder(encoded_text).view(batch_size, sequence_length + 1, 50, -1)[:, 1:]
+        else:
+            # shape (batch_size, sequence_length, 49, dim)
+            elmo_chars = words
+            if self.training and self.drop_data:
+                elmo_chars = data_dropout(elmo_chars, self._input_dropout.p)
+            char_emb = self.char_emb(elmo_chars)[:, :, 1:, :]
+            # shape (batch_size, sequence_length, 1, dim)
+            initial = self.char_initial(encoded_text[:, :sequence_length]).unsqueeze(2)
+
+            #   print ("initial",initial.size())
+            #     print ("char_emb",char_emb.size())
+            # shape (batch_size * sequence_length, 50, dim)
+            char_input = torch.cat([initial, char_emb], dim=2).view(batch_size * (sequence_length), 50, -1)
+            char_mask = ((char_input > 0).long().sum(dim=-1) > 0).long()
+
+            # shape (batch_size * sequence_length, 50, dim)
+            char_out = self.char_decoder(char_input, mask=char_mask)
+
+            # shape (batch_size * sequence_length, 50, 262)
+            words_logits = self.char_score(char_out).view(batch_size, sequence_length, 50, -1)
+
+        # shape (batch_size, sequence_length, n_pos)
+        pos_logits = self.pos_score(encoded_text)
+
+        prior_encoded = self.hidden_prior(encoded_text, mask)
+
+
+
+        normalised_pos_tag_logits = masked_log_softmax(pos_logits, mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
+        normalised_pos_tag_logits = normalised_pos_tag_logits[:, 1:]
+        pos_nll = F.nll_loss(normalised_pos_tag_logits.transpose(1, 2), pos_tags, reduction="sum")
+
+        mask = mask[:, 1:]
+        float_mask = mask.float()
+        encoded_text = encoded_text[:, 1:]
+        prior_encoded = prior_encoded[:, :-1]
+        #  print ("prior_encoded",prior_encoded.size())
+        #     print ("encoded_text",encoded_text.size())
+        #    print ("float_mask",float_mask.size())
+        diff = (encoded_text - prior_encoded) * float_mask.unsqueeze(-1)
+
+        reg_loss = (diff * diff).sum()
+
+        batch, seq_len, _ = words.size()
+
+        normalised_words_logits = masked_log_softmax(words_logits,
+                                                     mask.unsqueeze(-1).unsqueeze(-1)) * float_mask.unsqueeze(
+            -1).unsqueeze(-1)
+        normalised_words_logits = normalised_words_logits
+        words_nll = F.nll_loss(normalised_words_logits.permute(0, 3, 1, 2), words, reduction="sum")
+
+
+
+
+        return pos_nll + words_nll + reg_loss
 
     def _construct_loss(self,
                         head_tag_representation: torch.Tensor,

@@ -1,2 +1,1 @@
-from myallennlp.modules.refiner.multi_head_self_attention import MultiHeadSelfAttentionRefinment
 from myallennlp.modules.refiner.stacked_self_attention import StackedSelfAttentionRefinment
