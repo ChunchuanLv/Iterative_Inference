@@ -20,29 +20,25 @@
         "gumbel_head_t": 1.0,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
-            "hidden_size": 400,
+            "hidden_size": 500,
             "input_size": 200,
-            "num_layers": 1,
+            "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
         },
         "all_iteration_loss":true,
         "use_refiner_attention":true,
-         "num_iterations": 5,
-         "num_iterations_test": 5,
         "refine_weight":1.0,
 
         "arcs_refiner":{
             "type": "stacked_self_attention_refiner",
-            "hidden_dim": 800,
-            "input_dim": 800,
-            "projection_dim":500,
-            "feedforward_hidden_dim":800,
-            "dropout_prob": 0.3,
-            "num_layers": 1,
-            "num_attention_heads": 2,
-            "gumbel_head_t": 1.0,
-            "gumbel_at_test": false
+                 "input_dim": 1000,
+                 "hidden_dim": 500,
+                "head_multiply":true,
+                 "iterations": 1,
+                 "iterative_lr": 0.01,
+                 "high_order_weight":  0.98,
+                 "gumbel_t": 1.0
         },
         "initializer": [
             [

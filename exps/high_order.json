@@ -17,16 +17,38 @@
         "type": "high_order_parser",
         "arc_representation_dim": 500,
         "dropout": 0.3,
-        "margin": 1.0,
-        "with_cross_loss": true,
-        "encoder": {
+      "encoder": {
             "type": "stacked_bidirectional_lstm",
-            "hidden_size": 400,
             "input_size": 200,
+
+            "hidden_size": 500,
             "num_layers": 3,
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
+
+         //   "type":"pass_through",
+        //  "input_dim":200
         },
+        "refiner": {
+            "type": "score_refiner",
+                 "input_dim": 1000,
+                 "hidden_dim": 300,
+                 "iterations": 3,
+                 "testing_iterations": 3,
+                 "iterative_lr": 0.1,
+                 "learn_lr":false,
+                "mean_filed":true,
+                "diagonal_mask":true,
+                "stright_through":false,
+                "detach":false,
+                "initial_loss":true,
+                 "gumbel_t":1.0
+        },
+        "stational_loss":false,
+        "learn_score":true,
+        "last_only":false,
+
+        "use_mst_decoding_for_validation": true,
         "initializer": [
             [
                 ".*feedforward.*weight",
@@ -92,16 +114,16 @@
                 "sparse": true,
                 "trainable": true
             }
-        },
-        "use_mst_decoding_for_validation": true
+        }
     },
-    "train_data_path": "/disk/scratch/s1544871/ptb/train.gold.conll",
-    "validation_data_path": "/disk/scratch/s1544871/ptb/dev.gold.conll",
-    "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
+    "train_data_path": "/disk/scratch/s1544871/ptb/train.conll",
+    "validation_data_path": "/disk/scratch/s1544871/ptb/dev.conll",
+    "test_data_path": "/disk/scratch/s1544871/ptb/test.conll",
+    "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 2,
+        "cuda_device":3,
         "grad_norm": 5,
-        "num_epochs": 80,
+        "num_epochs": 100,
         "optimizer": {
             "type": "dense_sparse_adam",
             "betas": [
@@ -109,7 +131,7 @@
                 0.9
             ]
         },
-        "patience": 50,
+        "patience": 30,
         "validation_metric": "+LAS"
     }
 }

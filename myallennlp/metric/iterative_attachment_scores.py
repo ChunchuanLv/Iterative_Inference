@@ -25,13 +25,16 @@ class IterativeAttachmentScores(Metric):
 
         self._ignore_classes: List[int] = ignore_classes or []
         self._attachment_scores = {}
+        self._total_sentences = 0.
+        self.refine_lr = 0
     def __call__(self, # type: ignore
                  predicted_indices: torch.Tensor,
                  predicted_labels: torch.Tensor,
                  gold_indices: torch.Tensor,
                  gold_labels: torch.Tensor,
+                 mask: Optional[torch.Tensor] = None,
                  n_iteration:int = 0,
-                 mask: Optional[torch.Tensor] = None):
+                 refine_lr:float=0):
         """
         Parameters
         ----------
@@ -47,11 +50,13 @@ class IterativeAttachmentScores(Metric):
             A tensor of the same shape as ``predicted_indices``.
         """
 
+        self._total_sentences += gold_indices.size(0)
+        self.refine_lr += refine_lr * gold_indices.size(0)
         attachment_scores = self._attachment_scores.setdefault(n_iteration,AttachmentScores(self._ignore_classes))
 
         attachment_scores(predicted_indices,predicted_labels,gold_indices,gold_labels,mask=mask)
 
-    def get_metric(self, reset: bool = False):
+    def get_metric(self, reset: bool = False,training=True):
         """
         Returns
         -------
@@ -59,8 +64,15 @@ class IterativeAttachmentScores(Metric):
         """
 
         all_metrics = {}
+        all_metrics["refine_lr"] = self.refine_lr/self._total_sentences
+   #     all_metrics["cool_down"] = self.cool_down/self._total_sentences
+        sorted_scores = sorted(self._attachment_scores)
+        if training:
+            sorted_scores = [sorted_scores[0]] if len(sorted_scores) > 1 else []
+        else:
+            sorted_scores = sorted_scores[:-1]
 
-        for iterations in  sorted(self._attachment_scores)[:-1]:
+        for iterations in sorted_scores:
 
             metrics =  self._attachment_scores[iterations].get_metric()
             for metric in metrics:
@@ -78,3 +90,6 @@ class IterativeAttachmentScores(Metric):
     @overrides
     def reset(self):
         self._attachment_scores = {}
+        self._total_sentences = 0.
+        self.refine_lr = 0
+        self.cool_down = 0

@@ -16,10 +16,12 @@ from allennlp.modules import FeedForward
 from allennlp.models.model import Model
 from allennlp.nn import InitializerApplicator, RegularizerApplicator, Activation
 from allennlp.nn.util import get_text_field_mask, get_range_vector
-from allennlp.nn.util import get_device_of, masked_log_softmax, get_lengths_from_binary_sequence_mask
+from allennlp.nn.util import get_device_of, masked_log_softmax, get_lengths_from_binary_sequence_mask,masked_softmax
 from allennlp.nn.chu_liu_edmonds import decode_mst
 from allennlp.training.metrics import AttachmentScores
-
+from myallennlp.metric import IterativeAttachmentScores
+from myallennlp.modules.reparametrization import masked_cross_entropy, masked_gumbel_softmax,inplace_masked_gumbel_softmax,sample_gumbel
+from myallennlp.modules.refiner import ScoreBasedRefiner
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 POS_TO_IGNORE = {'``', "''", ':', ',', '.', 'PU', 'PUNCT', 'SYM'}
@@ -79,24 +81,30 @@ class HighOrderBiaffineDependencyParser(Model):
                  encoder: Seq2SeqEncoder,
                  tag_representation_dim: int,
                  arc_representation_dim: int,
+                 refiner: Seq2SeqEncoder,
                  tag_feedforward: FeedForward = None,
                  arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
                  use_mst_decoding_for_validation: bool = True,
+                 gumbel_t:float=1.0,
+                 last_only:bool=False,
+                 learn_score:bool=True,
+                 stational_loss:bool = False,
                  dropout: float = 0.0,
-                 margin: float = 0.1,
-                 with_cross_loss: bool = True,
+                 relaxed_head:bool=False,
                  input_dropout: float = 0.0,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(HighOrderBiaffineDependencyParser, self).__init__(vocab, regularizer)
-
+        self.gumbel_t = gumbel_t
+        self.learn_score = learn_score
+        self.relaxed_head = relaxed_head
+        self.last_only = last_only
+        self.refiner = refiner
+        self.stational_loss = stational_loss
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
-        self._margin = margin
-        self._with_cross_loss = with_cross_loss
         encoder_dim = encoder.get_output_dim()
-
         self.head_arc_feedforward = arc_feedforward or \
                                         FeedForward(encoder_dim, 1,
                                                     arc_representation_dim,
@@ -118,7 +126,9 @@ class HighOrderBiaffineDependencyParser(Model):
         self.tag_bilinear = torch.nn.modules.Bilinear(tag_representation_dim,
                                                       tag_representation_dim,
                                                       num_labels)
+        self.refiner.set_tagger(self.tag_bilinear)
 
+        self._num_labels = num_labels
         self._pos_tag_embedding = pos_tag_embedding or None
         self._dropout = InputVariationalDropout(dropout)
         self._input_dropout = Dropout(input_dropout)
@@ -144,8 +154,9 @@ class HighOrderBiaffineDependencyParser(Model):
         logger.info(f"Found POS tags correspoding to the following punctuation : {punctuation_tag_indices}. "
                     "Ignoring words with these POS tags for evaluation.")
 
-        self._attachment_scores = AttachmentScores()
+        self._attachment_scores = IterativeAttachmentScores()
         initializer(self)
+
 
     @overrides
     def forward(self,  # type: ignore
@@ -233,62 +244,107 @@ class HighOrderBiaffineDependencyParser(Model):
         attended_arcs = self.arc_attention(head_arc_representation,
                                            child_arc_representation)
 
+        high_order_weights = self.refiner.get_high_order_weights(encoded_text,mask)
+
         minus_inf = -1e8
         minus_mask = (1 - float_mask) * minus_inf
         attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
 
-        if self.training or not self.use_mst_decoding_for_validation:
-            predicted_heads, predicted_head_tags = self._greedy_decode(head_tag_representation,
-                                                                       child_tag_representation,
-                                                                       attended_arcs,
-                                                                       mask)
+        attended_arcs = masked_log_softmax(attended_arcs, mask=mask.unsqueeze(-1))
+        # Mask padded tokens, because we only want to consider actual words as heads.
+        if self.training:
+            relaxed_head = masked_gumbel_softmax(attended_arcs, tau=self.gumbel_t,
+                                                 mask=mask.unsqueeze(-1))
         else:
-            predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
-                                                                    child_tag_representation,
-                                                                    attended_arcs,
-                                                                    mask)
-        if head_indices is not None and head_tags is not None:
+            relaxed_head = masked_softmax(attended_arcs, mask=mask.unsqueeze(-1))
 
-            arc_nll, tag_nll = self._max_margin_loss(head_tag_representation=head_tag_representation,
-                                                    child_tag_representation=child_tag_representation,
-                                                    attended_arcs=attended_arcs,
-                                                    head_indices=head_indices,
-                                                    head_tags=head_tags,
-                                                     predicated_indices=predicted_heads.long(),
-                                                     predicated_head_tags=predicted_head_tags.long(),
-                                                    mask=mask)
-            loss = arc_nll + tag_nll
-            if self._with_cross_loss:
-                arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                         child_tag_representation=child_tag_representation,
-                                                         attended_arcs=attended_arcs,
-                                                         head_indices=head_indices,
-                                                         head_tags=head_tags,
-                                                         mask=mask)
-                loss = loss + arc_nll + tag_nll
-            evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
-            # We calculate attatchment scores for the whole sentence
-            # but excluding the symbolic ROOT token at the start,
-            # which is why we start from the second element in the sequence.
-            self._attachment_scores(predicted_heads[:, 1:],
-                                    predicted_head_tags[:, 1:],
-                                    head_indices[:, 1:],
-                                    head_tags[:, 1:],
-                                    evaluation_mask)
+        if self.relaxed_head:
+
+            head_tag_logits = self._get_head_tags_with_relaxed(head_tag_representation,
+                                                               child_tag_representation,
+                                                               relaxed_head)
         else:
-            arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                    child_tag_representation=child_tag_representation,
-                                                    attended_arcs=attended_arcs,
-                                                    head_indices=predicted_heads.long(),
-                                                    head_tags=predicted_head_tags.long(),
-                                                    mask=mask)
-            loss = arc_nll + tag_nll
+            head_tag_logits = self._get_head_tags(head_tag_representation,
+                                                  child_tag_representation,
+                                                  head_indices)
+
+        relaxed_head_tags = masked_softmax(head_tag_logits, mask.unsqueeze(-1), dim=2)
+
+        if self.training or not self.use_mst_decoding_for_validation:
+            attended_arcs_list, relaxed_head_list ,head_tag_logits_list,relaxed_head_tags_list = self.refiner(head_tag_representation,child_tag_representation,attended_arcs,relaxed_head,head_tag_logits, relaxed_head_tags,mask,high_order_weights = high_order_weights,head_indices=head_indices,
+                                                                  head_tags = head_tags)
+            if  self.training and self.last_only:
+                attended_arcs_list = [attended_arcs_list[-1]]
+                relaxed_head_list = [relaxed_head_list[-1]]
+            predicted_heads_list = []
+            predicted_head_tags_list = []
+
+            for relaxed_head_tags,relaxed_head in zip(relaxed_head_tags_list,relaxed_head_list):
+                # Given the greedily predicted heads, decode their dependency tags.
+                # shape (batch_size, sequence_length, num_head_tags)
+
+                _, predicted_heads = relaxed_head.max(2)
+                _, predicted_head_tags = relaxed_head_tags.max(2)
+                predicted_heads_list.append(predicted_heads)
+                predicted_head_tags_list.append(predicted_head_tags)
+        else:
+            attended_arcs_list, relaxed_head_list ,head_tag_logits_list,relaxed_head_tags_list = self.refiner(head_tag_representation,child_tag_representation,attended_arcs,relaxed_head,head_tag_logits, relaxed_head_tags,mask,high_order_weights = high_order_weights)
+            predicted_heads_list = []
+            predicted_head_tags_list = []
+
+            for attended_arcs,relaxed_head in zip(attended_arcs_list,relaxed_head_list):
+
+                predicted_heads, predicted_head_tags = self._mst_decode(head_tag_representation,
+                                                                        child_tag_representation,
+                                                                        attended_arcs,
+                                                                        mask)
+                predicted_heads_list.append(predicted_heads)
+                predicted_head_tags_list.append(predicted_head_tags)
+
+
+        loss = 0
+        for i, (attended_arcs,relaxed_head,head_tag_logits,relaxed_head_tags,predicted_heads,predicted_head_tags) in enumerate(zip(attended_arcs_list,relaxed_head_list,head_tag_logits_list,relaxed_head_tags_list,predicted_heads_list,predicted_head_tags_list)):
+            if head_indices is not None and head_tags is not None :
+                if self.training:
+                    loss =loss + 1/(len(attended_arcs_list)-i) * self._max_margin_loss(attended_arcs=attended_arcs,
+                                                            head_indices=head_indices,
+                                                            head_tags=head_tags,
+                                                            relaxed_head=relaxed_head,
+                                                            head_tag_logits=head_tag_logits,
+                                                            relaxed_head_tags=relaxed_head_tags,
+                                                            mask=mask,
+                                                            high_order_weights=high_order_weights)
+                else:
+                    arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                            child_tag_representation=child_tag_representation,
+                                                            attended_arcs=attended_arcs,
+                                                            head_indices=predicted_heads.long(),
+                                                            head_tags=predicted_head_tags.long(),
+                                                            mask=mask)
+                    loss = loss+ 1/(len(attended_arcs_list)-i) * (arc_nll + tag_nll)
+                evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
+                # We calculate attatchment scores for the whole sentence
+                # but excluding the symbolic ROOT token at the start,
+                # which is why we start from the second element in the sequence.
+                self._attachment_scores(predicted_heads[:, 1:],
+                                        predicted_head_tags[:, 1:],
+                                        head_indices[:, 1:],
+                                        head_tags[:, 1:],
+                                        evaluation_mask,
+                                        n_iteration = i,
+                                        refine_lr=self.refiner.get_lr()  )
+            else:
+                arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                        child_tag_representation=child_tag_representation,
+                                                        attended_arcs=attended_arcs,
+                                                        head_indices=predicted_heads.long(),
+                                                        head_tags=predicted_head_tags.long(),
+                                                        mask=mask)
+                loss = loss + arc_nll + tag_nll
 
         output_dict = {
                 "heads": predicted_heads,
                 "head_tags": predicted_head_tags,
-                "arc_loss": arc_nll,
-                "tag_loss": tag_nll,
                 "loss": loss,
                 "mask": mask,
                 "words": [meta["words"] for meta in metadata],
@@ -296,6 +352,7 @@ class HighOrderBiaffineDependencyParser(Model):
                 }
 
         return output_dict
+
 
     @overrides
     def decode(self, output_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -389,80 +446,9 @@ class HighOrderBiaffineDependencyParser(Model):
         tag_nll = -tag_loss.sum() / valid_positions.float()
         return arc_nll, tag_nll
 
-    def _max_margin_loss(self,
-                        head_tag_representation: torch.Tensor,
-                        child_tag_representation: torch.Tensor,
+    def _output_distance(self,
                         attended_arcs: torch.Tensor,
-                        head_indices: torch.Tensor,
-                        head_tags: torch.Tensor,
-                        predicated_indices: torch.Tensor,
-                        predicated_head_tags: torch.Tensor,
-                        mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the arc and tag loss for a sequence given gold head indices and tags.
-
-        Parameters
-        ----------
-        head_tag_representation : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
-            which will be used to generate predictions for the dependency tags
-            for the given arcs.
-        child_tag_representation : ``torch.Tensor``, required
-            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
-            which will be used to generate predictions for the dependency tags
-            for the given arcs.
-        attended_arcs : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
-            a distribution over attachements of a given word to all other words.
-        head_indices : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length).
-            The indices of the heads for every word.
-        head_tags : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length).
-            The dependency labels of the heads for every word.
-        mask : ``torch.Tensor``, required.
-            A mask of shape (batch_size, sequence_length), denoting unpadded
-            elements in the sequence.
-
-        Returns
-        -------
-        arc_nll : ``torch.Tensor``, required.
-            The negative log likelihood from the arc loss.
-        tag_nll : ``torch.Tensor``, required.
-            The negative log likelihood from the arc tag loss.
-        """
-        batch_size, sequence_length, _ = attended_arcs.size()
-
-
-        gold_arc_nll, gold_tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                    child_tag_representation=child_tag_representation,
-                                                    attended_arcs=attended_arcs,
-                                                    head_indices=head_indices,
-                                                    head_tags=head_tags,
-                                                    mask=mask)
-        predicated_arc_nll, predicated_tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
-                                                    child_tag_representation=child_tag_representation,
-                                                    attended_arcs=attended_arcs,
-                                                    head_indices=predicated_indices,
-                                                    head_tags=predicated_head_tags,
-                                                    mask=mask)
-
-        # The number of valid positions is equal to the number of unmasked elements minus
-        # 1 per sequence in the batch, to account for the symbolic HEAD token.
-        # shape ( batch_size, 1 )
-        valid_positions = mask.sum() -batch_size
-
-        arc_nll = torch.clamp(gold_arc_nll-predicated_arc_nll.detach()+self._margin, min=0).sum()/valid_positions.float()
-        tag_nll = torch.clamp(gold_tag_nll-predicated_tag_nll.detach()+self._margin, min=0).sum()/valid_positions.float()
-
-        return arc_nll, tag_nll
-
-
-
-    def _loss_per_instance(self,
-                        head_tag_representation: torch.Tensor,
-                        child_tag_representation: torch.Tensor,
-                        attended_arcs: torch.Tensor,
+                        relaxed_head_tag:torch.Tensor,
                         head_indices: torch.Tensor,
                         head_tags: torch.Tensor,
                         mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -501,14 +487,16 @@ class HighOrderBiaffineDependencyParser(Model):
         """
         float_mask = mask.float()
         batch_size, sequence_length, _ = attended_arcs.size()
+
         # shape (batch_size, 1)
         range_vector = get_range_vector(batch_size, get_device_of(attended_arcs)).unsqueeze(1)
         # shape (batch_size, sequence_length, sequence_length)
-        normalised_arc_logits = attended_arcs * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
+        normalised_arc_logits =  masked_log_softmax(attended_arcs,
+                                                   mask) * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
 
         # shape (batch_size, sequence_length, num_head_tags)
-        head_tag_logits = self._get_head_tags(head_tag_representation, child_tag_representation, head_indices)
-        normalised_head_tag_logits = head_tag_logits * float_mask.unsqueeze(-1)
+        normalised_head_tag_logits =(relaxed_head_tag+1e-10).log()*  float_mask.unsqueeze(-1)
+
         # index matrix with shape (batch, sequence_length)
         timestep_index = get_range_vector(sequence_length, get_device_of(attended_arcs))
         child_index = timestep_index.view(1, sequence_length).expand(batch_size, sequence_length).long()
@@ -517,15 +505,209 @@ class HighOrderBiaffineDependencyParser(Model):
         tag_loss = normalised_head_tag_logits[range_vector, child_index, head_tags]
         # We don't care about predictions for the symbolic ROOT token's head,
         # so we remove it from the loss.
-        # batch, length
         arc_loss = arc_loss[:, 1:]
         tag_loss = tag_loss[:, 1:]
 
+        # The number of valid positions is equal to the number of unmasked elements minus
+        # 1 per sequence in the batch, to account for the symbolic HEAD token.
 
-        arc_nll = -arc_loss.sum(2)
-        tag_nll = -tag_loss.sum(2)
-        return arc_nll, tag_nll
+       # print ("relaxed_head",relaxed_head.size())
+      #  print ("relaxed_head_tag",relaxed_head_tag.size())
+     #   print ("arc_loss",arc_loss.size())
+    #    print ("tag_loss",tag_loss.size())
+        arc_nll = -arc_loss.unsqueeze(2)
+        tag_nll = -tag_loss.unsqueeze(2)
+        return arc_nll ,tag_nll
 
+    def _max_margin_loss(self,
+                        attended_arcs: torch.Tensor,
+                        head_indices: torch.Tensor,
+                        head_tags: torch.Tensor,
+                         relaxed_head: torch.Tensor,
+                         head_tag_logits: torch.Tensor,
+                         relaxed_head_tags:torch.Tensor,
+                        mask: torch.Tensor,
+                         high_order_weights:torch.Tensor=None) -> torch.Tensor:
+        """
+        Computes the arc and tag loss for a sequence given gold head indices and tags.
+
+        Parameters
+        ----------
+        head_tag_logits : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, tag_num),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        attended_arcs : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
+            a distribution over attachements of a given word to all other words.
+        head_indices : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length).
+            The indices of the heads for every word.
+        head_tags : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length).
+            The dependency labels of the heads for every word.
+        relaxed_head : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length).
+            The indices of the heads for every word.
+        relaxed_head_tags : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, num_head_tags).
+            The dependency labels of the heads for every word.
+        mask : ``torch.Tensor``, required.
+            A mask of shape (batch_size, sequence_length), denoting unpadded
+            elements in the sequence.
+        high_order_features : ``torch.Tensor``, required.
+            A mask of shape (batch_size, sequence_length,sequence_length,num_relations), denoting unpadded
+            elements in the sequence.
+
+        Returns
+        -------
+        arc_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc loss.
+        tag_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc tag loss.
+        """
+        batch_size, sequence_length, _ = attended_arcs.size()
+
+        float_mask = mask.float()
+        soft_head_indices = torch.zeros(batch_size,sequence_length,sequence_length,device=head_indices.device)
+        soft_head_indices.scatter_(2, head_indices.unsqueeze(2), 1)
+        soft_head_indices = soft_head_indices* float_mask.unsqueeze(2)* float_mask.unsqueeze(1)
+
+        soft_head_tags = torch.zeros(batch_size,sequence_length,self._num_labels,device=head_tags.device)
+        soft_head_tags.scatter_(2, head_tags.unsqueeze(2), 1)
+        soft_head_tags = soft_head_tags * float_mask.unsqueeze(2)
+
+        gold_arc_nll, gold_tag_nll,gold_sibling_score , gold_grand_pa_score = self._score_per_instance(head_tag_logits=head_tag_logits,
+                                                                  attended_arcs=attended_arcs,
+                                                                  relaxed_head=soft_head_indices,
+                                                                  relaxed_head_tags=soft_head_tags,
+                                                                  mask=mask,
+                                                                  high_order_weights=high_order_weights)
+        arc_nll, tag_nll, sibling_score , grand_pa_score = self._score_per_instance(head_tag_logits=head_tag_logits,
+                                                    attended_arcs=attended_arcs,
+                                                    relaxed_head=relaxed_head,
+                                                    relaxed_head_tags=relaxed_head_tags,
+                                                    mask=mask,
+                                                    high_order_weights=high_order_weights)
+        delta_arc,delta_tag = self._output_distance(attended_arcs,relaxed_head_tags,head_indices,head_tags,mask)
+
+        sibling_delta, grand_pa_delta = self.refiner._high_order_output_distance(relaxed_head,relaxed_head_tags,soft_head_indices,soft_head_tags,mask)
+        # The number of valid positions is equal to the number of unmasked elements minus
+        # 1 per sequence in the batch, to account for the symbolic HEAD token.
+        # shape ( batch_size, 1 )
+        valid_positions = mask.sum() -batch_size
+
+        sibling_loss = torch.clamp(-gold_sibling_score+sibling_score+sibling_delta, min=0).sum()/valid_positions.float()
+        grand_pa_loss = torch.clamp(-gold_grand_pa_score+grand_pa_score+grand_pa_delta, min=0).sum()/valid_positions.float()
+        if self.stational_loss:
+            stational_loss = self.refiner.stational_score(soft_head_indices,soft_head_tags,attended_arcs,high_order_weights,mask)
+            stational_loss = stational_loss.sum() / valid_positions.float()
+        else:
+            stational_loss = 0
+        arc_nll = torch.clamp(-gold_arc_nll + arc_nll + delta_arc, min=0).sum() / valid_positions.float()
+        tag_nll = torch.clamp(-gold_tag_nll + tag_nll + delta_tag, min=0).sum() / valid_positions.float()
+        if self.learn_score:
+            return arc_nll +  tag_nll + sibling_loss+grand_pa_loss + stational_loss
+        else:
+            return  arc_nll + tag_nll +stational_loss
+
+
+
+
+
+    def _get_head_tags_with_relaxed(self,
+                       head_tag_representation: torch.Tensor,
+                       child_tag_representation: torch.Tensor,
+                        relaxed_head: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes the head tags given the head and child tag representations
+        and a tensor of head indices to compute tags for. Note that these are
+        either gold or predicted heads, depending on whether this function is
+        being called to compute the loss, or if it's being called during inference.
+
+        Parameters
+        ----------
+        head_tag_representation : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        child_tag_representation : ``torch.Tensor``, required
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        relaxed_head : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length,sequence_length). The distribution of the heads
+            for every word. It is assumed to be masked already
+
+        Returns
+        -------
+        head_tag_logits : ``torch.Tensor``
+            A tensor of shape (batch_size, sequence_length, num_head_tags),
+            representing logits for predicting a distribution over tags
+            for each arc.
+        """
+
+
+        # shape (batch_size, sequence_length, tag_representation_dim)
+        selected_head_tag_representations = torch.matmul(relaxed_head,head_tag_representation)
+      #  selected_head_tag_representations = selected_head_tag_representations.contiguous()
+        # shape (batch_size, sequence_length, num_head_tags)
+        head_tag_logits = self.tag_bilinear(selected_head_tag_representations,
+                                            child_tag_representation)
+        return head_tag_logits
+
+    def _score_per_instance(self,
+                                head_tag_logits: torch.Tensor,
+                        attended_arcs: torch.Tensor,
+                        relaxed_head: torch.Tensor,
+                        relaxed_head_tags: torch.Tensor,
+                        mask: torch.Tensor,
+                        high_order_weights:torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the arc and tag loss for a sequence given gold head indices and tags.
+
+        Parameters
+        ----------
+        head_tag_logits : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, tag_num),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        attended_arcs : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
+            a distribution over attachements of a given word to all other words.
+        relaxed_head : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length).
+            The indices of the heads for every word.
+        relaxed_head_tags : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, num_head_tags).
+            The dependency labels of the heads for every word.
+        mask : ``torch.Tensor``, required.
+            A mask of shape (batch_size, sequence_length), denoting unpadded
+            elements in the sequence.
+
+        Returns
+        -------
+        arc_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc loss.
+        tag_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc tag loss.
+        """
+        float_mask = mask.float()
+        batch_size, sequence_length, _ = attended_arcs.size()
+
+        # shape (batch_size, sequence_length, sequence_length)
+        arc_nll = relaxed_head * attended_arcs * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
+
+        tag_nll =  relaxed_head_tags * head_tag_logits * float_mask.unsqueeze(2)
+
+
+        # We don't care about predictions for the symbolic ROOT token's head,
+        # so we remove it from the loss.
+        # batch, length
+        arc_nll = arc_nll[:, 1:]
+        tag_nll = tag_nll[:, 1:]
+        sibling_score, grand_pa_score = self.refiner._score_per_instance(attended_arcs,relaxed_head,relaxed_head_tags,mask,high_order_weights)
+        return arc_nll, tag_nll ,sibling_score , grand_pa_score
 
     def _greedy_decode(self,
                        head_tag_representation: torch.Tensor,
@@ -581,6 +763,51 @@ class HighOrderBiaffineDependencyParser(Model):
         _, head_tags = head_tag_logits.max(dim=2)
         return heads, head_tags
 
+    def _relaxed_decode(self,
+                       attended_arcs: torch.Tensor,
+                       mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Decodes the head and head tag predictions by decoding the unlabeled arcs
+        independently for each word and then again, predicting the head tags of
+        these greedily chosen arcs indpendently. Note that this method of decoding
+        is not guaranteed to produce trees (i.e. there maybe be multiple roots,
+        or cycles when children are attached to their parents).
+
+        Parameters
+        ----------
+        head_tag_representation : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        child_tag_representation : ``torch.Tensor``, required
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        attended_arcs : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
+            a distribution over attachements of a given word to all other words.
+
+        Returns
+        -------
+        heads : ``torch.Tensor``
+            A tensor of shape (batch_size, sequence_length) representing the
+            greedily decoded heads of each word.
+        head_tags : ``torch.Tensor``
+            A tensor of shape (batch_size, sequence_length) representing the
+            dependency tags of the greedily decoded heads of each word.
+        """
+        # Mask the diagonal, because the head of a word can't be itself.
+        attended_arcs = attended_arcs + torch.diag(attended_arcs.new(mask.size(1)).fill_(-numpy.inf))
+        # Mask padded tokens, because we only want to consider actual words as heads.
+        if mask is not None:
+            minus_mask = (1 - mask).byte().unsqueeze(2)
+            attended_arcs.masked_fill_(minus_mask, -numpy.inf)
+
+            relaxed_head = masked_gumbel_softmax(attended_arcs,tau=self.gumbel_t,mask = mask)
+            relaxed_head.masked_fill_(minus_mask, 0)
+
+
+        return relaxed_head
     def _mst_decode(self,
                     head_tag_representation: torch.Tensor,
                     child_tag_representation: torch.Tensor,
@@ -754,4 +981,4 @@ class HighOrderBiaffineDependencyParser(Model):
 
     @overrides
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
-        return self._attachment_scores.get_metric(reset)
+        return self._attachment_scores.get_metric(reset,self.training)

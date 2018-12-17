@@ -19,13 +19,13 @@ from allennlp.nn.util import get_text_field_mask, get_range_vector
 from allennlp.nn.util import get_device_of, masked_log_softmax, get_lengths_from_binary_sequence_mask
 from allennlp.nn.chu_liu_edmonds import decode_mst
 from allennlp.training.metrics import AttachmentScores
-from myallennlp.modules.reparametrization import gumbel_softmax
+
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 POS_TO_IGNORE = {'``', "''", ':', ',', '.', 'PU', 'PUNCT', 'SYM'}
-import math
-@Model.register("var_iter_biaffine_parser")
-class VariationalIterativeBiaffineDependencyParser(Model):
+
+@Model.register("high_order_parser")
+class HighOrderBiaffineDependencyParser(Model):
     """
     This dependency parser follows the model of
     ` Deep Biaffine Attention for Neural Dependency Parsing (Dozat and Manning, 2016)
@@ -79,45 +79,33 @@ class VariationalIterativeBiaffineDependencyParser(Model):
                  encoder: Seq2SeqEncoder,
                  tag_representation_dim: int,
                  arc_representation_dim: int,
-                 mu0:float = 0,
-                 var0:float = 1,
-                 drop_pos:float=0.0,
-                 auto_enc: bool=False,
                  tag_feedforward: FeedForward = None,
                  arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
                  use_mst_decoding_for_validation: bool = True,
-                 iterations: int = 0,
-                 gumbel_head_t: float = 0,
                  dropout: float = 0.0,
+                 margin: float = 0.1,
+                 with_cross_loss: bool = True,
                  input_dropout: float = 0.0,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
-        super(VariationalIterativeBiaffineDependencyParser, self).__init__(vocab, regularizer)
+        super(HighOrderBiaffineDependencyParser, self).__init__(vocab, regularizer)
 
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
-        self.mu0 = mu0
-        self.logvar0 = math.log(var0)
-        self.var0 =var0
-        self.gumbel_head_t = gumbel_head_t
-        self.iterations = iterations
+        self._margin = margin
+        self._with_cross_loss = with_cross_loss
         encoder_dim = encoder.get_output_dim()
 
         self.head_arc_feedforward = arc_feedforward or \
                                         FeedForward(encoder_dim, 1,
                                                     arc_representation_dim,
                                                     Activation.by_name("elu")())
-        self.head_arc_feedforward_logvar =  copy.deepcopy(self.head_arc_feedforward)
-
         self.child_arc_feedforward = copy.deepcopy(self.head_arc_feedforward)
-
-        self.child_arc_feedforward_logvar = copy.deepcopy(self.head_arc_feedforward)
 
         self.arc_attention = BilinearMatrixAttention(arc_representation_dim,
                                                      arc_representation_dim,
                                                      use_input_biases=True)
-
 
         num_labels = self.vocab.get_vocab_size("head_tags")
 
@@ -125,32 +113,20 @@ class VariationalIterativeBiaffineDependencyParser(Model):
                                         FeedForward(encoder_dim, 1,
                                                     tag_representation_dim,
                                                     Activation.by_name("elu")())
-        self.head_tag_feedforward_logvar = copy.deepcopy(self.head_tag_feedforward)
-
         self.child_tag_feedforward = copy.deepcopy(self.head_tag_feedforward)
-        self.child_tag_feedforward_logvar = copy.deepcopy(self.head_tag_feedforward)
 
         self.tag_bilinear = torch.nn.modules.Bilinear(tag_representation_dim,
                                                       tag_representation_dim,
                                                       num_labels)
+
         self._pos_tag_embedding = pos_tag_embedding or None
         self._dropout = InputVariationalDropout(dropout)
         self._input_dropout = Dropout(input_dropout)
-        self._drop_pos = Dropout(drop_pos)
         self._head_sentinel = torch.nn.Parameter(torch.randn([1, 1, encoder.get_output_dim()]))
 
         representation_dim = text_field_embedder.get_output_dim()
         if pos_tag_embedding is not None:
             representation_dim += pos_tag_embedding.get_output_dim()
-
-            self.pos_score = FeedForward((arc_representation_dim+tag_representation_dim)*2, 2,
-                                          [arc_representation_dim+tag_representation_dim,pos_tag_embedding.num_embeddings],
-                                                         Activation.by_name("elu")())
-        self.auto_enc = auto_enc
-        if auto_enc:
-            self.auto_regre = FeedForward((arc_representation_dim+tag_representation_dim)*2, 2,
-                                          [arc_representation_dim+tag_representation_dim,text_field_embedder.get_output_dim()],
-                                                         [Activation.by_name("elu")(),Activation.by_name("linear")()])
 
         check_dimensions_match(representation_dim, encoder.get_input_dim(),
                                "text field embedding dim", "encoder input dim")
@@ -170,38 +146,6 @@ class VariationalIterativeBiaffineDependencyParser(Model):
 
         self._attachment_scores = AttachmentScores()
         initializer(self)
-
-    def reparameterize(self, mu, logvar):
-        if self.training:
-            std = torch.exp(0.5*logvar)
-            eps = torch.randn_like(std)
-            return eps.mul(std).add_(mu)
-        else:
-            return mu
-    def variational_refinement(self,encoded_text:torch.Tensor,
-                               head_attention:torch.Tensor,
-                               head_tag_logits:torch.Tensor,
-                               node_rep:torch.Tensor):
-        """
-        Parameters
-        ----------
-        encoded_text : torch.Tensor, required
-            The final encoding of source sentence
-            of shape (batch_size, sequence_length, (arc_representation_dim+tag_representation_dim)*2 ).
-        head_attention : ``torch.Tensor``, required.
-            The output of a ``SequenceLabelField`` containing POS tags.
-            POS tags are required regardless of whether they are used in the model,
-            because they are used to filter the evaluation metric to only consider
-            heads of words which are not punctuation.
-        head_tags : torch.LongTensor, optional (default = None)
-            A torch tensor representing the sequence of integer gold class labels for the arcs
-            in the dependency parse. Has shape ``(batch_size, sequence_length)``.
-        head_indices : torch.LongTensor, optional (default = None)
-            A torch tensor representing the sequence of integer indices denoting the parent of every
-            word in the dependency parse. Has shape ``(batch_size, sequence_length)``.
-        """
-        return None
-
 
     @overrides
     def forward(self,  # type: ignore
@@ -254,16 +198,10 @@ class VariationalIterativeBiaffineDependencyParser(Model):
         mask : ``torch.LongTensor``
             A mask denoting the padded elements in the batch.
         """
-        #shape  (batch_size, sequence_length, text_field_embedder.output_dim)
-        raw_embedded_text_input = self.text_field_embedder(words)
+        embedded_text_input = self.text_field_embedder(words)
         if pos_tags is not None and self._pos_tag_embedding is not None:
-            if self.training:
-                dropped_pos =  self._drop_pos(pos_tags.float())
-                dropped_pos = dropped_pos.mul(1 - self._drop_pos.p).long()
-                embedded_pos_tags = self._pos_tag_embedding( dropped_pos)
-            else:
-                embedded_pos_tags = self._pos_tag_embedding(pos_tags)
-            embedded_text_input = torch.cat([raw_embedded_text_input, embedded_pos_tags], -1)
+            embedded_pos_tags = self._pos_tag_embedding(pos_tags)
+            embedded_text_input = torch.cat([embedded_text_input, embedded_pos_tags], -1)
         elif self._pos_tag_embedding is not None:
             raise ConfigurationError("Model uses a POS embedding, but no POS tags were passed.")
 
@@ -285,39 +223,16 @@ class VariationalIterativeBiaffineDependencyParser(Model):
         encoded_text = self._dropout(encoded_text)
 
         # shape (batch_size, sequence_length, arc_representation_dim)
-        head_arc_representation_mu = self._dropout(self.head_arc_feedforward(encoded_text))
-        head_arc_representation_logvar = self.head_arc_feedforward_logvar(encoded_text)
-        head_arc_representation = self.reparameterize(head_arc_representation_mu, head_arc_representation_logvar)
-
-
-        child_arc_representation_mu = self._dropout(self.child_arc_feedforward(encoded_text))
-        child_arc_representation_logvar = self.child_arc_feedforward_logvar(encoded_text)
-        child_arc_representation = self.reparameterize(child_arc_representation_mu, child_arc_representation_logvar)
-
-
+        head_arc_representation = self._dropout(self.head_arc_feedforward(encoded_text))
+        child_arc_representation = self._dropout(self.child_arc_feedforward(encoded_text))
 
         # shape (batch_size, sequence_length, tag_representation_dim)
-        head_tag_representation_mu = self._dropout(self.head_tag_feedforward(encoded_text))
-        head_tag_representation_logvar = self.head_tag_feedforward_logvar(encoded_text)
-        head_tag_representation = self.reparameterize(head_tag_representation_mu, head_tag_representation_logvar)
-
-        child_tag_representation_mu = self._dropout(self.child_tag_feedforward(encoded_text))
-        child_tag_representation_logvar = self.child_tag_feedforward_logvar(encoded_text)
-        child_tag_representation = self.reparameterize(child_tag_representation_mu, child_tag_representation_logvar)
-
-
-
-        node_rep = torch.cat([head_arc_representation,child_arc_representation,head_tag_representation,child_tag_representation],dim=2)
-        # shape (batch_size, sequence_length, n_pos)
-        pos_scores = self.pos_score(node_rep)
-
-        if self.auto_enc:
-            auto_enc = self.auto_regre(node_rep)
-        else:
-            auto_enc = None
+        head_tag_representation = self._dropout(self.head_tag_feedforward(encoded_text))
+        child_tag_representation = self._dropout(self.child_tag_feedforward(encoded_text))
         # shape (batch_size, sequence_length, sequence_length)
         attended_arcs = self.arc_attention(head_arc_representation,
                                            child_arc_representation)
+
         minus_inf = -1e8
         minus_mask = (1 - float_mask) * minus_inf
         attended_arcs = attended_arcs + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
@@ -334,20 +249,23 @@ class VariationalIterativeBiaffineDependencyParser(Model):
                                                                     mask)
         if head_indices is not None and head_tags is not None:
 
-            arc_nll, tag_nll, pos_nll,kl_div,rec_loss = self._construct_loss(head_tag_representation=head_tag_representation,
+            arc_nll, tag_nll = self._max_margin_loss(head_tag_representation=head_tag_representation,
                                                     child_tag_representation=child_tag_representation,
-                                                    mus=(head_arc_representation_mu,child_arc_representation_mu,head_tag_representation_mu,child_tag_representation_mu),
-                                                    logvars=(head_arc_representation_logvar,child_arc_representation_logvar,head_tag_representation_logvar,child_tag_representation_logvar),
                                                     attended_arcs=attended_arcs,
                                                     head_indices=head_indices,
                                                     head_tags=head_tags,
-                                                    pos_tags=pos_tags,
-                                                    pos_logits=pos_scores,
-                                                    raw_input = raw_embedded_text_input,
-                                                    predicted_input = auto_enc,
+                                                     predicated_indices=predicted_heads.long(),
+                                                     predicated_head_tags=predicted_head_tags.long(),
                                                     mask=mask)
-            loss = arc_nll + tag_nll +pos_nll+ kl_div+rec_loss
-
+            loss = arc_nll + tag_nll
+            if self._with_cross_loss:
+                arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                         child_tag_representation=child_tag_representation,
+                                                         attended_arcs=attended_arcs,
+                                                         head_indices=head_indices,
+                                                         head_tags=head_tags,
+                                                         mask=mask)
+                loss = loss + arc_nll + tag_nll
             evaluation_mask = self._get_mask_for_eval(mask[:, 1:], pos_tags)
             # We calculate attatchment scores for the whole sentence
             # but excluding the symbolic ROOT token at the start,
@@ -358,28 +276,19 @@ class VariationalIterativeBiaffineDependencyParser(Model):
                                     head_tags[:, 1:],
                                     evaluation_mask)
         else:
-            arc_nll, tag_nll,pos_nll,kl_div,rec_loss = self._construct_loss(head_tag_representation=head_tag_representation,
+            arc_nll, tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
                                                     child_tag_representation=child_tag_representation,
-                                                    mus=(head_arc_representation_mu,child_arc_representation_mu,head_tag_representation_mu,child_tag_representation_mu),
-                                                    logvars=(head_arc_representation_logvar,child_arc_representation_logvar,head_tag_representation_logvar,child_tag_representation_logvar),
                                                     attended_arcs=attended_arcs,
                                                     head_indices=predicted_heads.long(),
                                                     head_tags=predicted_head_tags.long(),
-                                                    pos_tags=pos_tags,
-                                                    pos_logits=pos_scores,
-                                                    raw_input = raw_embedded_text_input,
-                                                    predicted_input = auto_enc,
                                                     mask=mask)
-            loss = arc_nll + tag_nll + pos_nll + kl_div+rec_loss
+            loss = arc_nll + tag_nll
 
         output_dict = {
                 "heads": predicted_heads,
                 "head_tags": predicted_head_tags,
                 "arc_loss": arc_nll,
                 "tag_loss": tag_nll,
-                "kl_div":kl_div,
-                "rec_loss":rec_loss,
-                "pos_loss":pos_nll,
                 "loss": loss,
                 "mask": mask,
                 "words": [meta["words"] for meta in metadata],
@@ -412,16 +321,10 @@ class VariationalIterativeBiaffineDependencyParser(Model):
     def _construct_loss(self,
                         head_tag_representation: torch.Tensor,
                         child_tag_representation: torch.Tensor,
-                        mus:Tuple[torch.Tensor],
-                        logvars:Tuple[torch.Tensor],
                         attended_arcs: torch.Tensor,
                         head_indices: torch.Tensor,
                         head_tags: torch.Tensor,
-                        pos_tags: torch.Tensor,
-                        pos_logits: torch.Tensor,
-                        raw_input : torch.Tensor,
-                        predicted_input: torch.Tensor,
-                        mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor,torch.Tensor]:
+                        mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Computes the arc and tag loss for a sequence given gold head indices and tags.
 
@@ -435,12 +338,6 @@ class VariationalIterativeBiaffineDependencyParser(Model):
             A tensor of shape (batch_size, sequence_length, tag_representation_dim),
             which will be used to generate predictions for the dependency tags
             for the given arcs.
-        mus: [``torch.Tensor``], required
-            A tensor of mean of latent gaussian
-            [(batch_size, sequence_length, dim)]
-        logvars:[``torch.Tensor``], required
-            A tensor of log varience of latent gaussian
-            [(batch_size, sequence_length, dim)]
         attended_arcs : ``torch.Tensor``, required.
             A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
             a distribution over attachements of a given word to all other words.
@@ -450,12 +347,6 @@ class VariationalIterativeBiaffineDependencyParser(Model):
         head_tags : ``torch.Tensor``, required.
             A tensor of shape (batch_size, sequence_length).
             The dependency labels of the heads for every word.
-        pos_tags : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length).
-            The part of speech tags for every word.
-        pos_logits : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length, n_pos).
-            The part of speech tags logits for every word.
         mask : ``torch.Tensor``, required.
             A mask of shape (batch_size, sequence_length), denoting unpadded
             elements in the sequence.
@@ -466,8 +357,6 @@ class VariationalIterativeBiaffineDependencyParser(Model):
             The negative log likelihood from the arc loss.
         tag_nll : ``torch.Tensor``, required.
             The negative log likelihood from the arc tag loss.
-        kl: ``torch.Tensor``, required.
-            KL divergence regularizor of posterior
         """
         float_mask = mask.float()
         batch_size, sequence_length, _ = attended_arcs.size()
@@ -492,27 +381,151 @@ class VariationalIterativeBiaffineDependencyParser(Model):
         arc_loss = arc_loss[:, 1:]
         tag_loss = tag_loss[:, 1:]
 
-
-
-        normalised_pos_tag_logits = masked_log_softmax(pos_logits, mask.unsqueeze(-1)) * float_mask.unsqueeze(-1)
-        normalised_pos_tag_logits = normalised_pos_tag_logits[:,1:]
-        pos_nll = F.nll_loss(normalised_pos_tag_logits.transpose(1,2), pos_tags, reduction="sum")
         # The number of valid positions is equal to the number of unmasked elements minus
         # 1 per sequence in the batch, to account for the symbolic HEAD token.
         valid_positions = mask.sum() - batch_size
 
         arc_nll = -arc_loss.sum() / valid_positions.float()
         tag_nll = -tag_loss.sum() / valid_positions.float()
-        pos_nll = pos_nll/valid_positions.float()
-        KLD = sum([ -0.5 * torch.sum( (1 + logvar -self.logvar0 - ((mu-self.mu0).pow(2) + logvar.exp())/self.var0)*float_mask.unsqueeze(2).expand_as(mu)) for mu,logvar in zip(mus,logvars)])
-        KLD = KLD/ valid_positions.float()
-        if self.auto_enc:
-            float_mask = float_mask[:,1:]
-            predicted_input = predicted_input[:,1:]
-            rec_loss = F.mse_loss(predicted_input* float_mask.unsqueeze(-1),raw_input* float_mask.unsqueeze(-1),reduction="sum")/ valid_positions.float()
-        else:
-            rec_loss = 0
-        return arc_nll, tag_nll,pos_nll,KLD,rec_loss
+        return arc_nll, tag_nll
+
+    def _max_margin_loss(self,
+                        head_tag_representation: torch.Tensor,
+                        child_tag_representation: torch.Tensor,
+                        attended_arcs: torch.Tensor,
+                        head_indices: torch.Tensor,
+                        head_tags: torch.Tensor,
+                        predicated_indices: torch.Tensor,
+                        predicated_head_tags: torch.Tensor,
+                        mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the arc and tag loss for a sequence given gold head indices and tags.
+
+        Parameters
+        ----------
+        head_tag_representation : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        child_tag_representation : ``torch.Tensor``, required
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        attended_arcs : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
+            a distribution over attachements of a given word to all other words.
+        head_indices : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length).
+            The indices of the heads for every word.
+        head_tags : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length).
+            The dependency labels of the heads for every word.
+        mask : ``torch.Tensor``, required.
+            A mask of shape (batch_size, sequence_length), denoting unpadded
+            elements in the sequence.
+
+        Returns
+        -------
+        arc_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc loss.
+        tag_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc tag loss.
+        """
+        batch_size, sequence_length, _ = attended_arcs.size()
+
+
+        gold_arc_nll, gold_tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                    child_tag_representation=child_tag_representation,
+                                                    attended_arcs=attended_arcs,
+                                                    head_indices=head_indices,
+                                                    head_tags=head_tags,
+                                                    mask=mask)
+        predicated_arc_nll, predicated_tag_nll = self._construct_loss(head_tag_representation=head_tag_representation,
+                                                    child_tag_representation=child_tag_representation,
+                                                    attended_arcs=attended_arcs,
+                                                    head_indices=predicated_indices,
+                                                    head_tags=predicated_head_tags,
+                                                    mask=mask)
+
+        # The number of valid positions is equal to the number of unmasked elements minus
+        # 1 per sequence in the batch, to account for the symbolic HEAD token.
+        # shape ( batch_size, 1 )
+        valid_positions = mask.sum() -batch_size
+
+        arc_nll = torch.clamp(gold_arc_nll-predicated_arc_nll.detach()+self._margin, min=0).sum()/valid_positions.float()
+        tag_nll = torch.clamp(gold_tag_nll-predicated_tag_nll.detach()+self._margin, min=0).sum()/valid_positions.float()
+
+        return arc_nll, tag_nll
+
+
+
+    def _loss_per_instance(self,
+                        head_tag_representation: torch.Tensor,
+                        child_tag_representation: torch.Tensor,
+                        attended_arcs: torch.Tensor,
+                        head_indices: torch.Tensor,
+                        head_tags: torch.Tensor,
+                        mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the arc and tag loss for a sequence given gold head indices and tags.
+
+        Parameters
+        ----------
+        head_tag_representation : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        child_tag_representation : ``torch.Tensor``, required
+            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
+            which will be used to generate predictions for the dependency tags
+            for the given arcs.
+        attended_arcs : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
+            a distribution over attachements of a given word to all other words.
+        head_indices : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length).
+            The indices of the heads for every word.
+        head_tags : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length).
+            The dependency labels of the heads for every word.
+        mask : ``torch.Tensor``, required.
+            A mask of shape (batch_size, sequence_length), denoting unpadded
+            elements in the sequence.
+
+        Returns
+        -------
+        arc_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc loss.
+        tag_nll : ``torch.Tensor``, required.
+            The negative log likelihood from the arc tag loss.
+        """
+        float_mask = mask.float()
+        batch_size, sequence_length, _ = attended_arcs.size()
+        # shape (batch_size, 1)
+        range_vector = get_range_vector(batch_size, get_device_of(attended_arcs)).unsqueeze(1)
+        # shape (batch_size, sequence_length, sequence_length)
+        normalised_arc_logits = attended_arcs * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
+
+        # shape (batch_size, sequence_length, num_head_tags)
+        head_tag_logits = self._get_head_tags(head_tag_representation, child_tag_representation, head_indices)
+        normalised_head_tag_logits = head_tag_logits * float_mask.unsqueeze(-1)
+        # index matrix with shape (batch, sequence_length)
+        timestep_index = get_range_vector(sequence_length, get_device_of(attended_arcs))
+        child_index = timestep_index.view(1, sequence_length).expand(batch_size, sequence_length).long()
+        # shape (batch_size, sequence_length)
+        arc_loss = normalised_arc_logits[range_vector, child_index, head_indices]
+        tag_loss = normalised_head_tag_logits[range_vector, child_index, head_tags]
+        # We don't care about predictions for the symbolic ROOT token's head,
+        # so we remove it from the loss.
+        # batch, length
+        arc_loss = arc_loss[:, 1:]
+        tag_loss = tag_loss[:, 1:]
+
+
+        arc_nll = -arc_loss.sum(2)
+        tag_nll = -tag_loss.sum(2)
+        return arc_nll, tag_nll
+
 
     def _greedy_decode(self,
                        head_tag_representation: torch.Tensor,
@@ -562,16 +575,9 @@ class VariationalIterativeBiaffineDependencyParser(Model):
 
         # Given the greedily predicted heads, decode their dependency tags.
         # shape (batch_size, sequence_length, num_head_tags)
-        if self.gumbel_head_t:
-            relaxed_head = gumbel_softmax(attended_arcs,self.gumbel_head_t)
-            relaxed_head.masked_fill_(minus_mask, 0)
-            head_tag_logits = self._get_head_tags_with_relaxed(head_tag_representation,
-                                                  child_tag_representation,
-                                                relaxed_head)
-        else:
-            head_tag_logits = self._get_head_tags(head_tag_representation,
-                                                  child_tag_representation,
-                                                  heads)
+        head_tag_logits = self._get_head_tags(head_tag_representation,
+                                              child_tag_representation,
+                                              heads)
         _, head_tags = head_tag_logits.max(dim=2)
         return heads, head_tags
 
@@ -720,46 +726,6 @@ class VariationalIterativeBiaffineDependencyParser(Model):
                                             child_tag_representation)
         return head_tag_logits
 
-    def _get_head_tags_with_relaxed(self,
-                       head_tag_representation: torch.Tensor,
-                       child_tag_representation: torch.Tensor,
-                        relaxed_head: torch.Tensor) -> torch.Tensor:
-        """
-        Decodes the head tags given the head and child tag representations
-        and a tensor of head indices to compute tags for. Note that these are
-        either gold or predicted heads, depending on whether this function is
-        being called to compute the loss, or if it's being called during inference.
-
-        Parameters
-        ----------
-        head_tag_representation : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
-            which will be used to generate predictions for the dependency tags
-            for the given arcs.
-        child_tag_representation : ``torch.Tensor``, required
-            A tensor of shape (batch_size, sequence_length, tag_representation_dim),
-            which will be used to generate predictions for the dependency tags
-            for the given arcs.
-        relaxed_head : ``torch.Tensor``, required.
-            A tensor of shape (batch_size, sequence_length,sequence_length). The distribution of the heads
-            for every word. It is assumed to be masked already
-
-        Returns
-        -------
-        head_tag_logits : ``torch.Tensor``
-            A tensor of shape (batch_size, sequence_length, num_head_tags),
-            representing logits for predicting a distribution over tags
-            for each arc.
-        """
-
-
-        # shape (batch_size, sequence_length, tag_representation_dim)
-        selected_head_tag_representations = torch.matmul(relaxed_head,head_tag_representation)
-      #  selected_head_tag_representations = selected_head_tag_representations.contiguous()
-        # shape (batch_size, sequence_length, num_head_tags)
-        head_tag_logits = self.tag_bilinear(selected_head_tag_representations,
-                                            child_tag_representation)
-        return head_tag_logits
     def _get_mask_for_eval(self,
                            mask: torch.LongTensor,
                            pos_tags: torch.LongTensor) -> torch.LongTensor:

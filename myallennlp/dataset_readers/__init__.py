@@ -7,4 +7,4 @@ and produce datasets in the formats required by specific models.
 """
 
 # pylint: disable=line-too-long
-from myallennlp.dataset_readers.my_universal_dependencies import MyUniversalDependenciesDatasetReader
+from myallennlp.dataset_readers.conll2009 import Conll2009DatasetReader

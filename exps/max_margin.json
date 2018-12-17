@@ -14,7 +14,7 @@
         ]
     },
     "model": {
-        "type": "biaffine_parser",
+        "type": "max_margin_parser",
         "arc_representation_dim": 500,
         "dropout": 0.3,
         "encoder": {

@@ -108,6 +108,113 @@ class GradientRefinment(Seq2SeqEncoder):
     def is_bidirectional(self):
         return False
 
+        def _iterative_decode(self,
+                              attended_arcs: torch.Tensor,
+                              high_order_features: torch.Tensor,
+                              mask: torch.Tensor,
+                              iterations: int = 1,
+                              head_indices: torch.Tensor = None,
+                              ) -> Tuple[torch.Tensor, torch.Tensor]:
+            '''
+
+            attended_arcs : ``torch.Tensor``, required.
+                A tensor of shape (batch_size, sequence_length, sequence_length) used to generate
+                a distribution over attachements of a given word to all other words.
+            head_indices : ``torch.Tensor``, required.
+                A tensor of shape (batch_size, sequence_length).
+                The indices of the heads for every word.
+            head_tags : ``torch.Tensor``, required.
+                A tensor of shape (batch_size, sequence_length).
+                The dependency labels of the heads for every word.
+            mask : ``torch.Tensor``, required.
+                A mask of shape (batch_size, sequence_length), denoting unpadded
+                elements in the sequence.
+
+            return refined_attended_arcs actually relaxed_head.log()
+    '''
+
+            def mask_attended_arcs(attended_arcs):
+                attended_arcs = attended_arcs + torch.diag(attended_arcs.new(mask.size(1)).fill_(-numpy.inf))
+                attended_arcs.masked_fill_(minus_mask, -numpy.inf)
+                return attended_arcs
+
+            def get_high_order_delta_y_gradient():
+
+                if head_indices is not None:
+                    sibling = torch.matmul(relaxed_head, relaxed_head.transpose(1, 2))
+
+                    grand_pa = torch.matmul(relaxed_head, relaxed_head)
+
+                    sgn_sibling = torch.sign(sibling - gold_sibling) * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                    sgn_grand_pa = torch.sign(grand_pa - gold_grand_pa) * float_mask.unsqueeze(
+                        1) * float_mask.unsqueeze(2)
+
+                    gradient_to_head = (torch.matmul(sgn_sibling, relaxed_head)
+                                        + torch.matmul(sgn_sibling.transpose(1, 2), relaxed_head)
+                                        + torch.matmul(sgn_grand_pa, relaxed_head.transpose(1, 2))
+                                        + torch.matmul(relaxed_head.transpose(1, 2), sgn_grand_pa))
+
+                    approximate_gradient_to_attended_arcs = gradient_to_head * relaxed_head
+                    gradient_to_attended_arcs = approximate_gradient_to_attended_arcs - approximate_gradient_to_attended_arcs.sum(
+                        2, keepdim=True) * relaxed_head * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                    return gradient_to_attended_arcs
+                else:
+                    return 0
+
+            def get_delta_y_gradient():
+
+                if head_indices is not None:
+                    return (relaxed_head - soft_head) * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                else:
+                    return 0
+
+            float_mask = mask.float()
+            minus_mask = (1 - mask).byte().unsqueeze(2)
+            batch_size, sequence_length = float_mask.size()
+            if head_indices is not None:
+                soft_head = torch.zeros(batch_size, sequence_length, sequence_length, device=head_indices.device)
+                soft_head.scatter_(2, head_indices.unsqueeze(2), 1)
+                soft_head = soft_head * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
+                gold_sibling = torch.matmul(soft_head, soft_head.transpose(1, 2))
+                gold_grand_pa = torch.matmul(soft_head, soft_head)
+            input_attended_arcs = attended_arcs
+            # Mask padded tokens, because we only want to consider actual words as heads.
+            if self.training:
+                relaxed_head = masked_gumbel_softmax(mask_attended_arcs(attended_arcs), tau=self.gumbel_t,
+                                                     mask=mask.unsqueeze(-1))
+            else:
+                relaxed_head = masked_softmax(mask_attended_arcs(attended_arcs), mask=mask.unsqueeze(-1))
+            relaxed_head = relaxed_head * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+            relaxed_head.masked_fill_(minus_mask, 0)
+
+            if self.high_order_weight:
+
+                sibling_weights = high_order_features[:, 0]
+                grand_pa_weights = high_order_features[:, 1]
+                lr = self.iterative_lr
+                for i in range(iterations):
+
+                    attended_arcs = attended_arcs \
+                                    + lr * (input_attended_arcs + get_delta_y_gradient() + self.high_order_weight * (
+                                torch.matmul(grand_pa_weights, relaxed_head.transpose(1, 2)) \
+                                + torch.matmul(sibling_weights, relaxed_head)) + get_high_order_delta_y_gradient())
+
+                    attended_arcs = masked_log_softmax(attended_arcs,
+                                                       mask) * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
+                    if self.gumbel_testing_inplace:
+                        noise, relaxed_head = inplace_masked_gumbel_softmax(mask_attended_arcs(attended_arcs),
+                                                                            tau=self.gumbel_t, mask=mask.unsqueeze(-1))
+                        attended_arcs = attended_arcs + lr * noise * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                    elif self.training or self.gumbel_testing:
+                        relaxed_head = masked_gumbel_softmax(mask_attended_arcs(attended_arcs), tau=self.gumbel_t,
+                                                             mask=mask.unsqueeze(-1))
+                    else:
+                        relaxed_head = masked_softmax(mask_attended_arcs(attended_arcs), mask=mask.unsqueeze(-1))
+                    relaxed_head = relaxed_head * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                    relaxed_head.masked_fill_(minus_mask, 0)
+                    lr = lr * self.cool_down
+
+            return attended_arcs, relaxed_head
     @overrides
     def forward(self, input: torch.Tensor,
                 attended_arcs:torch.Tensor,
