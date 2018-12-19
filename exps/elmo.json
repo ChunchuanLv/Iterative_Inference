@@ -19,7 +19,7 @@
         ]
     },
     "model": {
-        "type": "elmo_biaffine_parser",
+        "type": "biaffine_parser",
         "arc_representation_dim": 500,
         "encoder": {
             "type": "stacked_bidirectional_lstm",
@@ -29,9 +29,7 @@
             "recurrent_dropout_probability": 0.3,
             "use_highway": true
         },
-        "auto_enc": false,
         "dropout": 0.3,
-        "gumbel_head_t": 1.0,
         "initializer": [
             [
                 ".*feedforward.*weight",
@@ -95,19 +93,19 @@
             "options_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_options.json",
             "weight_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
             "do_layer_norm": false,
-            "dropout": 0.5
+            "dropout": 0
           }
         },
         "use_mst_decoding_for_validation": true
     },
-    "train_data_path": "/disk/scratch/s1544871/ptb/train.gold.conll",
-    "validation_data_path": "/disk/scratch/s1544871/ptb/dev.gold.conll",
-    "test_data_path": "/disk/scratch/s1544871/ptb/test.gold.conll",
+    "train_data_path": "/disk/scratch/s1544871/ptb/train.conll",
+    "validation_data_path": "/disk/scratch/s1544871/ptb/dev.conll",
+    "test_data_path": "/disk/scratch/s1544871/ptb/test.conll",
     "evaluate_on_test": true,
     "trainer": {
-        "cuda_device": 3,
+        "cuda_device": 2,
         "grad_norm": 5,
-        "num_epochs": 50,
+        "num_epochs": 150,
         "optimizer": {
             "type": "dense_sparse_adam",
             "betas": [
@@ -115,7 +113,7 @@
                 0.9
             ]
         },
-        "patience": 50,
+        "patience": 20,
         "validation_metric": "+LAS",
         "num_serialized_models_to_keep":-1
     }

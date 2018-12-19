@@ -2,27 +2,21 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="c9c4c977-37c4-4ad2-bb28-0b1bb92102a5" name="Default Changelist" comment="">
-      <change afterPath="$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/Iterative_Inference.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Iterative_Inference.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/allennlp" beforeDir="false" afterPath="$PROJECT_DIR$/allennlp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/allennlp/allennlp/data/fields/adjacency_field.py" beforeDir="false" afterPath="$PROJECT_DIR$/allennlp/allennlp/data/fields/adjacency_field.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/allennlp/allennlp/nn/util.py" beforeDir="false" afterPath="$PROJECT_DIR$/allennlp/allennlp/nn/util.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/allennlp/allennlp/training/trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/allennlp/allennlp/training/trainer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/exps/elmo.json" beforeDir="false" afterPath="$PROJECT_DIR$/exps/elmo.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/exps/high_order.json" beforeDir="false" afterPath="$PROJECT_DIR$/exps/high_order.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/exps/refiner.json" beforeDir="false" afterPath="$PROJECT_DIR$/exps/refiner.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/exps/skipgram.json" beforeDir="false" afterPath="$PROJECT_DIR$/exps/skipgram.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/dataset_readers/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/dataset_readers/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/dataset_readers/my_universal_dependencies.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/dataset_readers/conll2009.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/metric/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/metric/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/metric/iterative_attachment_scores.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/metric/iterative_attachment_scores.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/models/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/models/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/models/guided_lstm_dependency_parser.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/models/gumbel_biaffine_dependency_parser.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/exps/srl2009.json" beforeDir="false" afterPath="$PROJECT_DIR$/exps/srl2009.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/myallennlp/metric/labeled_f1_measure.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/metric/labeled_f1_measure.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/myallennlp/models/high_order_biaffine_dependency_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/models/high_order_biaffine_dependency_parser.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/models/variational_iterative_biaffine_dependency_parser.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/modules/refiner/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/modules/refiner/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/modules/refiner/stacked_self_attention.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/myallennlp/modules/refiner_with_gradient/stacked_self_attention.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/modules/refiner_with_gradient/stacked_self_attention.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/myallennlp/models/srl_graph.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/models/srl_graph.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/myallennlp/modules/refiner/mlp_forward_backward.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/modules/refiner/mlp_forward_backward.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/myallennlp/modules/refiner/srl_score_based_refiner.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/modules/refiner/srl_score_based_refiner.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/myallennlp/modules/reparametrization/gumbel_softmax.py" beforeDir="false" afterPath="$PROJECT_DIR$/myallennlp/modules/reparametrization/gumbel_softmax.py" afterDir="false" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
@@ -35,38 +29,42 @@
     <session id="-324999109">
       <usages-collector id="statistics.lifecycle.project">
         <counts>
+          <entry key="project.closed" value="1" />
           <entry key="project.open.time.10" value="1" />
           <entry key="project.open.time.17" value="1" />
-          <entry key="project.opened" value="2" />
+          <entry key="project.open.time.19" value="1" />
+          <entry key="project.open.time.8" value="1" />
+          <entry key="project.open.time.86" value="1" />
+          <entry key="project.opened" value="5" />
         </counts>
       </usages-collector>
       <usages-collector id="statistics.file.extensions.open">
         <counts>
-          <entry key="json" value="85" />
+          <entry key="json" value="89" />
           <entry key="jsonnet" value="6" />
-          <entry key="py" value="371" />
+          <entry key="py" value="384" />
           <entry key="txt" value="5" />
         </counts>
       </usages-collector>
       <usages-collector id="statistics.file.types.open">
         <counts>
-          <entry key="JSON" value="85" />
+          <entry key="JSON" value="89" />
           <entry key="PLAIN_TEXT" value="11" />
-          <entry key="Python" value="371" />
+          <entry key="Python" value="384" />
         </counts>
       </usages-collector>
       <usages-collector id="statistics.file.extensions.edit">
         <counts>
           <entry key="dummy" value="88" />
-          <entry key="json" value="2935" />
-          <entry key="py" value="21205" />
+          <entry key="json" value="3080" />
+          <entry key="py" value="23429" />
         </counts>
       </usages-collector>
       <usages-collector id="statistics.file.types.edit">
         <counts>
-          <entry key="JSON" value="2935" />
+          <entry key="JSON" value="3080" />
           <entry key="PLAIN_TEXT" value="88" />
-          <entry key="Python" value="21205" />
+          <entry key="Python" value="23429" />
         </counts>
       </usages-collector>
     </session>
@@ -74,26 +72,40 @@
   <component name="FileEditorManager">
     <leaf SIDE_TABS_SIZE_LIMIT_KEY="300">
       <file pinned="false" current-in-tab="false">
-        <entry file="file://$PROJECT_DIR$/myallennlp/models/srl_graph.py">
+        <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/srl_score_based_refiner.py">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="1424">
-              <caret line="169" column="21" selection-start-line="169" selection-start-column="8" selection-end-line="169" selection-end-column="21" />
+            <state relative-caret-position="716">
+              <caret line="216" lean-forward="true" selection-start-line="216" selection-end-line="216" />
               <folding>
-                <element signature="e#0#51#0" expanded="true" />
+                <element signature="e#0#31#0" expanded="true" />
+                <marker date="1545254220000" expanded="true" signature="4158:4396" ph="..." />
+                <marker date="1545254220000" expanded="true" signature="8042:8352" ph="..." />
               </folding>
             </state>
           </provider>
         </entry>
       </file>
       <file pinned="false" current-in-tab="false">
-        <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/srl_score_based_refiner.py">
+        <entry file="file://$PROJECT_DIR$/myallennlp/models/srl_graph.py">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="810">
-              <caret line="183" column="29" lean-forward="true" selection-start-line="183" selection-start-column="29" selection-end-line="183" selection-end-column="29" />
+            <state relative-caret-position="765">
+              <caret line="336" column="18" lean-forward="true" selection-start-line="336" selection-start-column="18" selection-end-line="336" selection-end-column="18" />
+              <folding>
+                <element signature="e#0#51#0" expanded="true" />
+                <marker date="1545254220000" expanded="true" signature="14197:16406" ph="..." />
+              </folding>
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file pinned="false" current-in-tab="true">
+        <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/mlp_forward_backward.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="341">
+              <caret line="140" lean-forward="true" selection-start-line="140" selection-end-line="140" />
               <folding>
                 <element signature="e#0#31#0" expanded="true" />
-                <marker date="1545077497000" expanded="true" signature="4111:4301" ph="..." />
-                <marker date="1545077497000" expanded="true" signature="8092:8380" ph="..." />
+                <marker date="1545254275000" expanded="true" signature="2958:3734" ph="..." />
               </folding>
             </state>
           </provider>
@@ -102,57 +114,8 @@
       <file pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/exps/srl2009.json">
           <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="746">
-              <caret line="65" lean-forward="true" selection-start-line="65" selection-end-line="65" />
-            </state>
-          </provider>
-        </entry>
-      </file>
-      <file pinned="false" current-in-tab="true">
-        <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py">
-          <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="569">
-              <caret line="389" column="52" selection-start-line="389" selection-start-column="52" selection-end-line="389" selection-end-column="52" />
-              <folding>
-                <element signature="e#0#31#0" expanded="true" />
-                <marker date="1545077730000" expanded="true" signature="5343:5348" ph="..." />
-                <marker date="1545077730000" expanded="true" signature="15808:18064" ph="..." />
-                <marker date="1545077730000" expanded="true" signature="15863:15962" ph="..." />
-              </folding>
-            </state>
-          </provider>
-        </entry>
-      </file>
-      <file pinned="false" current-in-tab="false">
-        <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/mlp_forward_backward.py">
-          <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="165">
-              <caret line="11" column="24" selection-start-line="11" selection-start-column="6" selection-end-line="11" selection-end-column="24" />
-              <folding>
-                <element signature="e#0#31#0" expanded="true" />
-                <marker date="1544910659000" expanded="true" signature="3295:3475" ph="..." />
-              </folding>
-            </state>
-          </provider>
-        </entry>
-      </file>
-      <file pinned="false" current-in-tab="false">
-        <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/__init__.py">
-          <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="45">
-              <caret line="3" column="78" selection-start-line="3" selection-start-column="78" selection-end-line="3" selection-end-column="78" />
-              <folding>
-                <element signature="e#0#76#0" expanded="true" />
-              </folding>
-            </state>
-          </provider>
-        </entry>
-      </file>
-      <file pinned="false" current-in-tab="false">
-        <entry file="file://$PROJECT_DIR$/exps/high_order.json">
-          <provider selected="true" editor-type-id="text-editor">
-            <state relative-caret-position="810">
-              <caret line="78" column="17" lean-forward="true" selection-start-line="78" selection-start-column="17" selection-end-line="78" selection-end-column="17" />
+            <state relative-caret-position="630">
+              <caret line="42" column="24" selection-start-line="42" selection-start-column="24" selection-end-line="42" selection-end-column="24" />
             </state>
           </provider>
         </entry>
@@ -168,36 +131,36 @@
   </component>
   <component name="FindInProjectRecents">
     <findStrings>
-      <find>determ</find>
-      <find>detern</find>
-      <find>iterative_lr</find>
-      <find>InputVariationalDropout</find>
-      <find>refiner</find>
       <find>Dropout</find>
       <find>get_delta_y_gradient</find>
       <find>head_indices</find>
-      <find>_score_per_instance</find>
       <find>head_tag_logits</find>
       <find>detach</find>
       <find>device</find>
-      <find>_max_margin_loss</find>
       <find>_get_head_tags_with_relaxed</find>
       <find>tag_bilinear</find>
       <find>_get_head_tags</find>
       <find>relaxed_head_tags</find>
       <find>initial_loss</find>
-      <find>training</find>
       <find>conllu_file</find>
       <find>lazy_parse</find>
       <find>DEFAULT_FIELDS</find>
       <find>F1Measure</find>
-      <find>_greedy_decode</find>
       <find>_indexed_labels</find>
       <find>print</find>
       <find>_construct_loss</find>
       <find>get_token_index</find>
       <find>unwrap_to_tensors</find>
       <find>_tag_loss</find>
+      <find>_score_per_instance</find>
+      <find>max_margi</find>
+      <find>_greedy_decode</find>
+      <find>_max_margin_loss</find>
+      <find>arc_tags</find>
+      <find>training</find>
+      <find>softmax</find>
+      <find>stright_through</find>
+      <find>sum_dim</find>
     </findStrings>
   </component>
   <component name="Git.Settings">
@@ -209,7 +172,6 @@
         <option value="$PROJECT_DIR$/allennlp/allennlp/training/trainer.py" />
         <option value="$PROJECT_DIR$/myallennlp/modules/refiner_with_gradient/multi_head_self_attention.py" />
         <option value="$PROJECT_DIR$/myallennlp/modules/refiner_with_gradient/__init__.py" />
-        <option value="$PROJECT_DIR$/exps/elmo.json" />
         <option value="$PROJECT_DIR$/exps/elmo_rec.json" />
         <option value="$PROJECT_DIR$/myallennlp/modules/vecsseq_encoders/__init__.py" />
         <option value="$PROJECT_DIR$/myallennlp/modules/vec2seq_encoders/seq2vec_encoder.py" />
@@ -239,8 +201,6 @@
         <option value="$PROJECT_DIR$/myallennlp/models/gumbel_biaffine_dependency_parser.py" />
         <option value="$PROJECT_DIR$/myallennlp/metric/iterative_attachment_scores.py" />
         <option value="$PROJECT_DIR$/exps/semantic_role_labeler.json" />
-        <option value="$PROJECT_DIR$/myallennlp/modules/reparametrization/gumbel_softmax.py" />
-        <option value="$PROJECT_DIR$/myallennlp/models/high_order_biaffine_dependency_parser.py" />
         <option value="$PROJECT_DIR$/allennlp/allennlp/data/dataset_readers/universal_dependencies.py" />
         <option value="$PROJECT_DIR$/myallennlp/dataset_readers/__init__.py" />
         <option value="$PROJECT_DIR$/myallennlp/models/__init__.py" />
@@ -248,15 +208,18 @@
         <option value="$PROJECT_DIR$/myallennlp/dataset_readers/conll2009.py" />
         <option value="$PROJECT_DIR$/myallennlp/modules/refiner/forward_backward.py" />
         <option value="$PROJECT_DIR$/myallennlp/metric/__init__.py" />
-        <option value="$PROJECT_DIR$/exps/srl2009.json" />
-        <option value="$PROJECT_DIR$/myallennlp/metric/iterative_labeled_f1_measure.py" />
+        <option value="$PROJECT_DIR$/myallennlp/modules/refiner/__init__.py" />
+        <option value="$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py" />
+        <option value="$PROJECT_DIR$/myallennlp/models/high_order_biaffine_dependency_parser.py" />
+        <option value="$PROJECT_DIR$/exps/elmo.json" />
+        <option value="$PROJECT_DIR$/myallennlp/modules/reparametrization/gumbel_softmax.py" />
+        <option value="$PROJECT_DIR$/exps/high_order.json" />
         <option value="$PROJECT_DIR$/myallennlp/metric/labeled_f1_measure.py" />
+        <option value="$PROJECT_DIR$/myallennlp/metric/iterative_labeled_f1_measure.py" />
+        <option value="$PROJECT_DIR$/exps/srl2009.json" />
+        <option value="$PROJECT_DIR$/myallennlp/modules/refiner/srl_score_based_refiner.py" />
         <option value="$PROJECT_DIR$/myallennlp/models/srl_graph.py" />
         <option value="$PROJECT_DIR$/myallennlp/modules/refiner/mlp_forward_backward.py" />
-        <option value="$PROJECT_DIR$/myallennlp/modules/refiner/__init__.py" />
-        <option value="$PROJECT_DIR$/myallennlp/modules/refiner/srl_score_based_refiner.py" />
-        <option value="$PROJECT_DIR$/exps/high_order.json" />
-        <option value="$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py" />
       </list>
     </option>
   </component>
@@ -274,7 +237,6 @@
       <foldersAlwaysOnTop value="true" />
     </navigator>
     <panes>
-      <pane id="Scope" />
       <pane id="ProjectPane">
         <subPane>
           <expand>
@@ -404,7 +366,11 @@
           <select />
         </subPane>
       </pane>
+      <pane id="Scope" />
     </panes>
+  </component>
+  <component name="PropertiesComponent">
+    <property name="settings.editor.selected.configurable" value="com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable" />
   </component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
@@ -447,6 +413,15 @@
     </task>
     <servers />
   </component>
+  <component name="TodoView">
+    <todo-panel id="selected-file">
+      <is-autoscroll-to-source value="true" />
+    </todo-panel>
+    <todo-panel id="all">
+      <are-packages-shown value="true" />
+      <is-autoscroll-to-source value="true" />
+    </todo-panel>
+  </component>
   <component name="ToolWindowManager">
     <frame x="0" y="28" width="1920" height="1018" extended-state="6" />
     <editor active="true" />
@@ -460,10 +435,10 @@
       <window_info anchor="bottom" id="Debug" order="3" weight="0.4" />
       <window_info anchor="bottom" id="Cvs" order="4" weight="0.25" />
       <window_info anchor="bottom" id="Inspection" order="5" weight="0.4" />
-      <window_info anchor="bottom" id="TODO" order="6" />
-      <window_info anchor="bottom" id="Version Control" order="7" />
+      <window_info anchor="bottom" id="TODO" order="6" sideWeight="0.49921012" weight="0.32919955" />
+      <window_info anchor="bottom" id="Version Control" order="7" sideWeight="0.4997367" weight="0.32919955" />
       <window_info anchor="bottom" id="Terminal" order="8" />
-      <window_info anchor="bottom" id="Event Log" order="9" side_tool="true" weight="0.32919955" />
+      <window_info anchor="bottom" id="Event Log" order="9" sideWeight="0.5007899" side_tool="true" weight="0.32919955" />
       <window_info anchor="bottom" id="Python Console" order="10" />
       <window_info anchor="right" id="Commander" internal_type="SLIDING" order="0" type="SLIDING" weight="0.4" />
       <window_info anchor="right" id="Ant Build" order="1" weight="0.25" />
@@ -513,35 +488,11 @@
     </breakpoint-manager>
   </component>
   <component name="editorHistoryManager">
-    <entry file="file://$PROJECT_DIR$/myallennlp/models/guided_transformer_dependency_parser.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="-720">
-          <folding>
-            <element signature="e#0#51#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/allennlp/allennlp/training/__init__.py">
-      <provider selected="true" editor-type-id="text-editor" />
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/models/gumbel_biaffine_dependency_parser.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="585">
-          <caret line="336" column="57" selection-start-line="336" selection-start-column="57" selection-end-line="336" selection-end-column="57" />
-          <folding>
-            <element signature="e#0#51#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
+    <entry file="file://$PROJECT_DIR$/myallennlp/models/gumbel_biaffine_dependency_parser.py" />
     <entry file="file://$PROJECT_DIR$/myallennlp/modules/reparametrization/__init__.py">
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="105">
           <caret line="7" column="60" selection-start-line="7" selection-start-column="54" selection-end-line="7" selection-end-column="60" />
-          <folding>
-            <element signature="e#0#65#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -559,9 +510,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="375">
           <caret line="94" column="23" selection-start-line="94" selection-start-column="3" selection-end-line="94" selection-end-column="29" />
-          <folding>
-            <element signature="e#0#68#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -611,9 +559,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="75">
           <caret line="5" column="38" selection-start-line="5" selection-start-column="26" selection-end-line="5" selection-end-column="38" />
-          <folding>
-            <element signature="e#0#31#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -621,32 +566,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="566">
           <caret line="155" lean-forward="true" selection-start-line="155" selection-end-line="155" />
-          <folding>
-            <element signature="e#0#51#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/modules/reparametrization/gumbel_softmax.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="341">
-          <caret line="77" lean-forward="true" selection-start-line="77" selection-end-line="77" />
-          <folding>
-            <element signature="e#0#12#0" expanded="true" />
-            <marker date="1544719144000" expanded="true" signature="570:632" ph="..." />
-            <marker date="1544719144000" expanded="true" signature="3408:3410" ph="..." />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/models/high_order_biaffine_dependency_parser.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="194">
-          <caret line="302" lean-forward="true" selection-start-line="302" selection-end-line="302" />
-          <folding>
-            <element signature="e#0#51#0" expanded="true" />
-            <marker date="1544720893000" expanded="true" signature="20284:20290" ph="..." />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -654,37 +573,23 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="-619">
           <caret line="20" column="20" selection-start-line="20" selection-start-column="20" selection-end-line="20" selection-end-column="20" />
-          <folding>
-            <element signature="e#0#14#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/allennlp/allennlp/data/dataset_readers/conll2003.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="-675">
-          <folding>
-            <element signature="e#0#49#0" expanded="true" />
-          </folding>
-        </state>
+        <state relative-caret-position="-675" />
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/allennlp/allennlp/data/dataset_readers/coreference_resolution/conll.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="-1305">
-          <folding>
-            <element signature="e#0#14#0" expanded="true" />
-          </folding>
-        </state>
+        <state relative-caret-position="-1305" />
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/allennlp/allennlp/data/dataset_readers/universal_dependencies.py">
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="326">
           <caret line="25" column="40" selection-start-line="25" selection-start-column="6" selection-end-line="25" selection-end-column="40" />
-          <folding>
-            <element signature="e#0#36#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -699,9 +604,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="345">
           <caret line="23" column="28" selection-start-line="23" selection-start-column="6" selection-end-line="23" selection-end-column="28" />
-          <folding>
-            <element signature="e#0#49#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -716,13 +618,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="450">
           <caret line="87" column="37" lean-forward="true" selection-start-line="87" selection-start-column="37" selection-end-line="88" selection-end-column="80" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/exps/glove100.json">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="405">
-          <caret line="87" column="37" lean-forward="true" selection-start-line="87" selection-start-column="37" selection-end-line="88" selection-end-column="96" />
         </state>
       </provider>
     </entry>
@@ -744,9 +639,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="195">
           <caret line="67" column="45" selection-start-line="67" selection-start-column="27" selection-end-line="67" selection-end-column="45" />
-          <folding>
-            <element signature="e#0#52#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -754,9 +646,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="131">
           <caret line="73" column="64" lean-forward="true" selection-start-line="73" selection-start-column="64" selection-end-line="73" selection-end-column="64" />
-          <folding>
-            <element signature="e#0#36#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -768,13 +657,7 @@
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/allennlp/allennlp/data/fields/index_field.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state>
-          <folding>
-            <element signature="e#0#23#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
+      <provider selected="true" editor-type-id="text-editor" />
     </entry>
     <entry file="file://$PROJECT_DIR$/allennlp/allennlp/data/fields/knowledge_graph_field.py">
       <provider selected="true" editor-type-id="text-editor">
@@ -785,20 +668,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="824">
           <caret line="73" lean-forward="true" selection-start-line="73" selection-end-line="73" />
-          <folding>
-            <element signature="e#0#33#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/dataset_readers/conll2009.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="701">
-          <caret line="121" column="82" selection-start-line="121" selection-start-column="82" selection-end-line="121" selection-end-column="82" />
-          <folding>
-            <element signature="e#0#36#0" expanded="true" />
-            <marker date="1544808085000" expanded="true" signature="2431:2432" ph="..." />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -813,9 +682,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="450">
           <caret line="93" column="57" selection-start-line="93" selection-start-column="42" selection-end-line="93" selection-end-column="57" />
-          <folding>
-            <element signature="e#0#41#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -823,9 +689,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="-270">
           <caret line="15" column="7" lean-forward="true" selection-start-line="15" selection-start-column="7" selection-end-line="15" selection-end-column="7" />
-          <folding>
-            <element signature="e#0#27#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -833,9 +696,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="345">
           <caret line="23" column="51" selection-start-line="23" selection-start-column="51" selection-end-line="23" selection-end-column="51" />
-          <folding>
-            <element signature="e#0#47#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -843,9 +703,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="191">
           <caret line="58" column="58" lean-forward="true" selection-start-line="58" selection-start-column="45" selection-end-line="58" selection-end-column="58" />
-          <folding>
-            <element signature="e#0#33#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -853,19 +710,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="30">
           <caret line="2" column="84" selection-start-line="2" selection-start-column="84" selection-end-line="2" selection-end-column="84" />
-          <folding>
-            <element signature="e#0#83#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/metric/iterative_labeled_f1_measure.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="641">
-          <caret line="66" column="29" selection-start-line="66" selection-start-column="29" selection-end-line="66" selection-end-column="29" />
-          <folding>
-            <element signature="e#0#27#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -873,26 +717,6 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="-120">
           <caret line="169" column="26" selection-start-line="169" selection-start-column="26" selection-end-line="169" selection-end-column="26" />
-          <folding>
-            <element signature="e#0#54#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/metric/labeled_f1_measure.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="701">
-          <caret line="131" column="22" selection-start-line="131" selection-start-column="22" selection-end-line="131" selection-end-column="22" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/models/srl_graph.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1424">
-          <caret line="169" column="21" selection-start-line="169" selection-start-column="8" selection-end-line="169" selection-end-column="21" />
-          <folding>
-            <element signature="e#0#51#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
@@ -900,58 +724,118 @@
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="45">
           <caret line="3" column="78" selection-start-line="3" selection-start-column="78" selection-end-line="3" selection-end-column="78" />
-          <folding>
-            <element signature="e#0#76#0" expanded="true" />
-          </folding>
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/mlp_forward_backward.py">
+    <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="165">
-          <caret line="11" column="24" selection-start-line="11" selection-start-column="6" selection-end-line="11" selection-end-column="24" />
+        <state relative-caret-position="719">
+          <caret line="477" lean-forward="true" selection-start-line="477" selection-end-line="477" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/exps/glove100.json">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="195">
+          <caret line="16" column="32" selection-start-line="16" selection-start-column="17" selection-end-line="16" selection-end-column="32" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/exps/elmo.json">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="1425">
+          <caret line="95" column="24" lean-forward="true" selection-start-line="95" selection-start-column="24" selection-end-line="95" selection-end-column="24" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/myallennlp/modules/reparametrization/gumbel_softmax.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="810">
+          <caret line="81" column="78" lean-forward="true" selection-start-line="81" selection-start-column="78" selection-end-line="81" selection-end-column="78" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/myallennlp/metric/iterative_labeled_f1_measure.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="240">
+          <caret line="23" column="21" selection-start-line="23" selection-start-column="17" selection-end-line="23" selection-end-column="21" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/myallennlp/metric/labeled_f1_measure.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="60">
+          <caret line="9" column="31" selection-start-line="9" selection-start-column="31" selection-end-line="9" selection-end-column="31" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/myallennlp/models/high_order_biaffine_dependency_parser.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="8745">
+          <caret line="606" column="105" selection-start-line="606" selection-start-column="105" selection-end-line="607" selection-end-column="105" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/exps/high_order.json">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="1050">
+          <caret line="70" column="14" selection-start-line="70" selection-start-column="14" selection-end-line="70" selection-end-column="14" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/myallennlp/dataset_readers/conll2009.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="705">
+          <caret line="60" column="42" selection-start-line="60" selection-start-column="31" selection-end-line="60" selection-end-column="42" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/exps/srl2009.json">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="630">
+          <caret line="42" column="24" selection-start-line="42" selection-start-column="24" selection-end-line="42" selection-end-column="24" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/multi_head_self_attention.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state>
           <folding>
             <element signature="e#0#31#0" expanded="true" />
-            <marker date="1544910659000" expanded="true" signature="3295:3475" ph="..." />
           </folding>
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/srl_score_based_refiner.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="810">
-          <caret line="183" column="29" lean-forward="true" selection-start-line="183" selection-start-column="29" selection-end-line="183" selection-end-column="29" />
+        <state relative-caret-position="716">
+          <caret line="216" lean-forward="true" selection-start-line="216" selection-end-line="216" />
           <folding>
             <element signature="e#0#31#0" expanded="true" />
-            <marker date="1545077497000" expanded="true" signature="4111:4301" ph="..." />
-            <marker date="1545077497000" expanded="true" signature="8092:8380" ph="..." />
+            <marker date="1545254220000" expanded="true" signature="4158:4396" ph="..." />
+            <marker date="1545254220000" expanded="true" signature="8042:8352" ph="..." />
           </folding>
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/exps/srl2009.json">
+    <entry file="file://$PROJECT_DIR$/myallennlp/models/srl_graph.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="746">
-          <caret line="65" lean-forward="true" selection-start-line="65" selection-end-line="65" />
+        <state relative-caret-position="765">
+          <caret line="336" column="18" lean-forward="true" selection-start-line="336" selection-start-column="18" selection-end-line="336" selection-end-column="18" />
+          <folding>
+            <element signature="e#0#51#0" expanded="true" />
+            <marker date="1545254220000" expanded="true" signature="14197:16406" ph="..." />
+          </folding>
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/exps/high_order.json">
+    <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/mlp_forward_backward.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="810">
-          <caret line="78" column="17" lean-forward="true" selection-start-line="78" selection-start-column="17" selection-end-line="78" selection-end-column="17" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/myallennlp/modules/refiner/score_based_refiner.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="569">
-          <caret line="389" column="52" selection-start-line="389" selection-start-column="52" selection-end-line="389" selection-end-column="52" />
+        <state relative-caret-position="341">
+          <caret line="140" lean-forward="true" selection-start-line="140" selection-end-line="140" />
           <folding>
             <element signature="e#0#31#0" expanded="true" />
-            <marker date="1545077730000" expanded="true" signature="5343:5348" ph="..." />
-            <marker date="1545077730000" expanded="true" signature="15808:18064" ph="..." />
-            <marker date="1545077730000" expanded="true" signature="15863:15962" ph="..." />
+            <marker date="1545254275000" expanded="true" signature="2958:3734" ph="..." />
           </folding>
         </state>
       </provider>

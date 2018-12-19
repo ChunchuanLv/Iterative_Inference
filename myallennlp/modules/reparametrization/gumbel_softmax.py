@@ -45,13 +45,15 @@ def masked_gumbel_softmax(logits, tau=0.8, mask=None, hard=False, eps=1e-10,dim=
     https://github.com/ericjang/gumbel-softmax/blob/3c8584924603869e90ca74ac20a6a03d99a91ef9/Categorical%20VAE.ipynb ,
     (MIT license)
     """
+    if mask is not None:
+        mask = mask.float()
+        while mask.dim() < logits.dim():
+            mask = mask.unsqueeze(1)
 
-    mask = mask.float()
-    while mask.dim() < logits.dim():
-        mask = mask.unsqueeze(1)
-
-    # To limit numerical errors from large vector elements outside the mask, we zero these out.
-    y_soft = _gumbel_softmax_sample(logits * mask, tau=tau, eps=eps)
+        # To limit numerical errors from large vector elements outside the mask, we zero these out.
+        y_soft = _gumbel_softmax_sample(logits * mask, tau=tau, eps=eps)
+    else:
+        y_soft = _gumbel_softmax_sample(logits , tau=tau, eps=eps)
     if hard:
         _, k = y_soft.max(-1)
         # this bit is based on
@@ -65,7 +67,10 @@ def masked_gumbel_softmax(logits, tau=0.8, mask=None, hard=False, eps=1e-10,dim=
         y = y_hard - y_soft.detach() + y_soft
     else:
         y = y_soft
-    return y * mask
+    if mask is not None:
+        return y * mask
+    else:
+        return y
 
 def hard(y_soft,mask):
 

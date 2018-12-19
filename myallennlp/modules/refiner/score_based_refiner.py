@@ -127,7 +127,6 @@ class ScoreBasedRefiner(Seq2SeqEncoder):
         return high_order_weights * float_mask.unsqueeze(2) * float_mask.unsqueeze(3)
 
     def _score_per_instance(self,
-                        attended_arcs: torch.Tensor,
                         relaxed_head: torch.Tensor,
                         relaxed_head_tags: torch.Tensor,
                         mask: torch.Tensor,
@@ -162,7 +161,7 @@ class ScoreBasedRefiner(Seq2SeqEncoder):
             The negative log likelihood from the arc tag loss.
         """
         float_mask = mask.float()
-        batch_size, sequence_length, _ = attended_arcs.size()
+        batch_size, sequence_length, _ = relaxed_head.size()
 
         sibling = torch.matmul(relaxed_head,relaxed_head.transpose(1,2))
         sibling_weights = high_order_weights[:,0]
@@ -381,13 +380,13 @@ class ScoreBasedRefiner(Seq2SeqEncoder):
         def get_delta_y_gradient(relaxed_head_t):
 
             if head_indices is not None and self.training :
-                return - soft_head/(relaxed_head_t+1e-8)  * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                return (relaxed_head_t- soft_head)  * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
             else:
                 return 0
         def get_delta_tag_gradient(relaxed_head_tag_t):
 
             if head_indices is not None and self.training :
-                return (relaxed_head_tag_t- soft_tag)  * float_mask.unsqueeze(2)
+                return (relaxed_head_tag_t- soft_tag)   * float_mask.unsqueeze(2)
             else:
                 return 0
         float_mask = mask.float()
@@ -440,7 +439,7 @@ class ScoreBasedRefiner(Seq2SeqEncoder):
                             + torch.matmul(sibling_weights, relaxed_head) + torch.matmul(relaxed_head.transpose(1, 2),
                                                                                          grand_pa_weights) \
                             + torch.matmul(sibling_weights.transpose(1, 2),
-                                           relaxed_head) + get_delta_y_gradient(relaxed_head)
+                                           relaxed_head)
 
 
             else:
@@ -461,7 +460,7 @@ class ScoreBasedRefiner(Seq2SeqEncoder):
 
             relaxed_head = relaxed_head * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
             relaxed_head.masked_fill_(minus_mask, 0)
-            attended_arcs_list.append(attended_arcs )
+            attended_arcs_list.append(attended_arcs + get_delta_y_gradient(relaxed_head))
             relaxed_head_list.append(relaxed_head)
 
 

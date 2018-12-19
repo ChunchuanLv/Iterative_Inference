@@ -706,7 +706,7 @@ class HighOrderBiaffineDependencyParser(Model):
         # batch, length
         arc_nll = arc_nll[:, 1:]
         tag_nll = tag_nll[:, 1:]
-        sibling_score, grand_pa_score = self.refiner._score_per_instance(attended_arcs,relaxed_head,relaxed_head_tags,mask,high_order_weights)
+        sibling_score, grand_pa_score = self.refiner._score_per_instance(relaxed_head,relaxed_head_tags,mask,high_order_weights)
         return arc_nll, tag_nll ,sibling_score , grand_pa_score
 
     def _greedy_decode(self,

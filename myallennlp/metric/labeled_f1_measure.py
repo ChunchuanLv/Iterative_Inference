@@ -120,15 +120,16 @@ class LabeledF1Measure(Metric):
         un_f1_measure = 2. * ((un_precision * un_recall) / (un_precision + un_recall + 1e-13))
         if reset:
             self.reset()
-
+        def format(number):
+            return number
         metrics = {}
-        metrics["un_precision"] = un_precision
-        metrics["un_recall"] = un_recall
-        metrics["un_f1"] = un_f1_measure
+     #   metrics["u_pre"] = format(un_precision)
+    #    metrics["u_re"] =   format(un_recall)
+        metrics["un_f1"] =   format(un_f1_measure)
 
-        metrics["lablled_precision"] = precision
-        metrics["lablled_recall"] = recall
-        metrics["lablled_f1"] = f1_measure
+        metrics["pre"] =  format(precision)
+        metrics["re"] =   format(recall)
+        metrics["f1"] =  format(f1_measure)
         return metrics
 
     def reset(self):

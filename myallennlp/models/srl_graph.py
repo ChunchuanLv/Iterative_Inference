@@ -16,10 +16,11 @@ from allennlp.models.model import Model
 from allennlp.nn import InitializerApplicator, RegularizerApplicator, Activation
 from allennlp.nn.util import get_text_field_mask
 from allennlp.nn.util import get_lengths_from_binary_sequence_mask
-from allennlp.training.metrics import F1Measure
 from myallennlp.metric import IterativeLabeledF1Measure
+from myallennlp.modules.refiner.srl_score_based_refiner import SRLScoreBasedRefiner
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
+from allennlp.nn.util import masked_softmax, weighted_sum
 
 @Model.register("srl_graph_parser")
 class SRLGraphParser(Model):
@@ -64,9 +65,10 @@ class SRLGraphParser(Model):
                  text_field_embedder: TextFieldEmbedder,
                  encoder: Seq2SeqEncoder,
                  tag_representation_dim: int,
-                 arc_representation_dim: int,
+                 refine_representation_dim: int=0,
+                 refiner: Seq2SeqEncoder = None,
+                 train_score:bool=True,
                  tag_feedforward: FeedForward = None,
-                 arc_feedforward: FeedForward = None,
                  pos_tag_embedding: Embedding = None,
                  dropout: float = 0.0,
                  input_dropout: float = 0.0,
@@ -74,9 +76,9 @@ class SRLGraphParser(Model):
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(SRLGraphParser, self).__init__(vocab, regularizer)
-
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
+        self.train_score = train_score
         self.edge_prediction_threshold = edge_prediction_threshold
         if not 0 < edge_prediction_threshold < 1:
             raise ConfigurationError(f"edge_prediction_threshold must be between "
@@ -87,6 +89,17 @@ class SRLGraphParser(Model):
 
 
         num_labels = self.vocab.get_vocab_size("labels")+1
+
+        self.refiner = refiner
+        if self.refiner:
+            self.refiner.set_score_mlp(n_tags=num_labels,extra_dim=refine_representation_dim)
+            self.predicte_feedforward = FeedForward(encoder_dim, 1,
+                                                    refine_representation_dim,
+                                                    Activation.by_name("elu")())
+            self.arguement_feedforward = FeedForward(encoder_dim, 1,
+                                                    refine_representation_dim,
+                                                    Activation.by_name("elu")())
+
 
         self.head_tag_feedforward = tag_feedforward or \
                                         FeedForward(encoder_dim, 1,
@@ -139,6 +152,8 @@ class SRLGraphParser(Model):
         An output dictionary.
         """
         arc_tags = arc_tags + 1  #from -1 shit to 1
+
+        arc_tags = arc_tags.long()
         embedded_text_input = self.text_field_embedder(tokens)
         if pos_tags is not None and self._pos_tag_embedding is not None:
             embedded_pos_tags = self._pos_tag_embedding(pos_tags)
@@ -170,27 +185,67 @@ class SRLGraphParser(Model):
         arc_tag_probs = self._greedy_decode(arc_tag_logits,
                                                        mask)
 
+        if self.refiner :
+            predict_representation = self._dropout(self.predicte_feedforward(encoded_text))
+            argument_representation = self._dropout(self.arguement_feedforward(encoded_text))
+
+            arc_tag_probs_list,pre_intermediates_list,arg_intermediates_list = self.refiner(predict_representation,
+                argument_representation,
+                arc_tag_logits,
+                arc_tag_probs,
+                mask,
+                arc_tags)
+        else:
+            arc_tag_probs_list = [arc_tag_probs]
         output_dict = {
-                "arc_tag_probs": arc_tag_probs,
+                "arc_tag_probs": arc_tag_probs_list[-1],
                 "mask": mask,
                 "tokens": [meta["tokens"] for meta in metadata],
                 }
 
-        if arc_tags is not None:
-            tag_nll = self._construct_loss(arc_tag_logits=arc_tag_logits,
-                                                    arc_tags=arc_tags,
-                                                    mask=mask)
+        output_dict["loss"] = 0
+        output_dict["tag_loss"] = 0
 
-            output_dict["loss"] = tag_nll
-            output_dict["tag_loss"] = tag_nll
+        if self.refiner is not None:
+            for i,(arc_tag_probs,pre_intermediates,arg_intermediates) in enumerate(zip(arc_tag_probs_list,pre_intermediates_list,arg_intermediates_list)):
+                if arc_tags is not None:
+                    tag_nll,loss = self._max_margin_loss(arc_tag_logits=arc_tag_logits,
+                                                            arc_tags=arc_tags,
+                                                    arc_tag_probs=arc_tag_probs,
+                                                    predict_representation=predict_representation,
+                                                    argument_representation=argument_representation,
+                                                         pre_intermediates=pre_intermediates,
+                                                         arg_intermediates=arg_intermediates,
+                                                            mask=mask)
 
-            # Make the arc tags not have negative values anywhere
-            # (by default, no edge is indicated with -1).
+                    output_dict["loss"] = output_dict["loss"] + + 1/(len(arc_tag_probs_list)-i) *loss
+                    output_dict["tag_loss"] =  output_dict["tag_loss"] + + 1/(len(arc_tag_probs_list)-i) *tag_nll
 
-            tag_mask = float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
-            # We stack scores here because the f1 measure expects a
-            # distribution, rather than a single value.
-            self._labelled_f1(arc_tag_probs, arc_tags, tag_mask)
+                    # Make the arc tags not have negative values anywhere
+                    # (by default, no edge is indicated with -1).
+
+                    tag_mask = float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                    # We stack scores here because the f1 measure expects a
+                    # distribution, rather than a single value.
+                    self._labelled_f1(arc_tag_probs, arc_tags, tag_mask,n_iteration=i)
+        else:
+
+            for i,arc_tag_probs in enumerate(arc_tag_probs_list):
+                if arc_tags is not None:
+                    tag_nll = self._construct_loss(arc_tag_logits=arc_tag_logits,
+                                                            arc_tags=arc_tags,
+                                                            mask=mask)
+
+                    output_dict["loss"] = output_dict["loss"] + tag_nll
+                    output_dict["tag_loss"] =  output_dict["tag_loss"] + tag_nll
+
+                    # Make the arc tags not have negative values anywhere
+                    # (by default, no edge is indicated with -1).
+
+                    tag_mask = float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                    # We stack scores here because the f1 measure expects a
+                    # distribution, rather than a single value.
+                    self._labelled_f1(arc_tag_probs, arc_tags, tag_mask,n_iteration=i)
 
         return output_dict
 
@@ -219,7 +274,59 @@ class SRLGraphParser(Model):
         output_dict["arcs"] = arcs
         output_dict["arc_tags"] = arc_tags
         return output_dict
+    def _max_margin_loss(self,arc_tag_logits,
+                          arc_tags,
+                            arc_tag_probs,
+                            predict_representation,
+                            argument_representation,
+                         pre_intermediates,
+                         arg_intermediates,
+                            mask):
 
+
+        float_mask = mask.float().unsqueeze(-1)
+        batch_size, sequence_length = mask.size()
+
+        soft_tags = torch.zeros(batch_size, sequence_length,sequence_length,arc_tag_probs.size(-1), device=arc_tags.device)
+        soft_tags.scatter_(3, arc_tags.unsqueeze(3), 1)
+        soft_tags = soft_tags * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+
+        # shape (batch ,sequence_length,sequence_length )
+        delta = 1 - (arc_tag_probs * soft_tags).sum(3)
+        delta = delta * float_mask.squeeze(-1).unsqueeze(1)* float_mask.squeeze(-1).unsqueeze(2)
+        #    delta = delta.detach()
+
+        valid_positions = mask.sum()
+        #local_score (batch ,sequence_length,sequence_length,n_labels )
+        #predict_score (batch ,sequence_length,1 )
+        #argument_score (batch ,sequence_length,1 )
+        if self.train_score:
+            local_score,predict_score,argument_score = self.refiner.get_score_per_feature(predict_representation,
+                    argument_representation,
+                    arc_tag_logits,
+                    arc_tag_probs,
+                    mask,
+                    pre_intermediates,
+                    arg_intermediates)
+            gold_local_score,gold_predict_score,gold_argument_score = self.refiner.get_score_per_feature(predict_representation,
+                    argument_representation,
+                    arc_tag_logits,
+                    soft_tags,
+                    mask,
+                    pre_intermediates,
+                    arg_intermediates)
+
+
+            tag_nll = torch.clamp(-gold_local_score + local_score + delta.unsqueeze(-1), min=0).sum() / valid_positions.float()
+
+            predict_nll = torch.clamp(-gold_predict_score + predict_score + delta.sum(2).unsqueeze(-1), min=0).sum() / valid_positions.float()
+            argument_nll = torch.clamp(-gold_argument_score + argument_score + delta.sum(1).unsqueeze(-1), min=0).sum() / valid_positions.float()
+
+            return tag_nll, tag_nll+predict_nll+argument_nll
+
+        else:
+            tag_nll = torch.clamp((-soft_tags + arc_tag_probs)*arc_tag_logits + delta.unsqueeze(-1), min=0).sum() / valid_positions.float()
+            return tag_nll, tag_nll
     def _construct_loss(self,arc_tag_logits: torch.Tensor,
                         arc_tags: torch.Tensor,
                         mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -301,11 +408,12 @@ class SRLGraphParser(Model):
      #   minus_mask = (1 - mask).byte().unsqueeze(2)
        # arc_tag_logits.masked_fill_(minus_mask.unsqueeze(-1), -numpy.inf)
         # shape (batch_size, sequence_length, sequence_length, num_tags)
-        arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits, dim=-1)
 
+        float_mask = mask.float().unsqueeze(-1)
+        arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits, dim=-1) * float_mask.unsqueeze(1)* float_mask.unsqueeze(2)
         return arc_tag_probs
 
     @overrides
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
 
-        return  self._labelled_f1.get_metric(reset)
+        return  self._labelled_f1.get_metric(reset,training=self.training)
