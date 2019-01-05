@@ -18,7 +18,8 @@ from allennlp.nn.util import masked_softmax, weighted_sum
 from allennlp.nn.util import add_positional_features
 from typing import List ,Tuple,Dict
 from myallennlp.modules.refiner.mlp_forward_backward import MLPForwardBackward
-from myallennlp.modules.reparametrization.gumbel_softmax import hard, masked_gumbel_softmax,inplace_masked_gumbel_softmax
+from myallennlp.modules.refiner.mlp_auto_encoder import MLPAutoEncoder
+from myallennlp.modules.reparametrization.gumbel_softmax import hard, _sample_gumbel,inplace_masked_gumbel_softmax
 
 @Seq2SeqEncoder.register("srl_score_refiner")
 class SRLScoreBasedRefiner(Seq2SeqEncoder):
@@ -70,6 +71,7 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
                  iterations: int = 1,
                  dropout:float=0.3,
                  stright_through:bool=False,
+                 denoise:bool=False,
                  hidden_dim:int = 300,
                  detach:bool=False,
                  initial_loss:bool = True,
@@ -77,6 +79,7 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
         super(SRLScoreBasedRefiner, self).__init__()
         self.gumbel_t = gumbel_t
         self.detach = detach
+        self.denoise = denoise
         self.stright_through = stright_through
         self.iterations = iterations
         self.hidden_dim = hidden_dim
@@ -85,8 +88,8 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
 
     def set_score_mlp(self,n_tags:int,
                  extra_dim: int):
-        self.predicte_mlp = MLPForwardBackward(n_tags,extra_dim,self.hidden_dim,sum_dim=1,dropout=self._dropout.p)
-        self.argument_mlp = MLPForwardBackward(n_tags,extra_dim,self.hidden_dim,sum_dim = 2,dropout=self._dropout.p)
+        self.predicte_mlp = MLPAutoEncoder(n_tags + 1,extra_dim,self.hidden_dim,sum_dim=1,dropout=self._dropout.p )
+   #     self.argument_mlp = MLPAutoEncoder(n_tags + 1,extra_dim,self.hidden_dim,sum_dim = 2,dropout=self._dropout.p,max = self.max )
 
     @overrides
     def get_input_dim(self) -> int:
@@ -102,12 +105,12 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
 
 
     def get_score_per_feature(self,predict_representation:torch.Tensor,
-                argument_representation:torch.Tensor,
+                              argument_representation:torch.Tensor,
                 arc_tag_logits:torch.Tensor,
                 arc_tag_relaxed:torch.Tensor,
+                arc_probs:torch.Tensor,
                 mask: torch.Tensor,
-                pre_intermediates:Dict={},
-                arg_intermediates:Dict={}) -> Tuple[torch.Tensor]:
+                intermediates:Dict={}) -> Tuple[torch.Tensor]:
         """
         Computes the arc and tag loss for a sequence given gold head indices and tags.
 
@@ -132,6 +135,8 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
 
         Returns
         -------
+        arc_scores : ``torch.Tensor``, required.
+            A tensor of shape (batch_size, sequence_length, sequence_length),
         tag_score : ``torch.Tensor``, required.
             A tensor of shape (batch_size, sequence_length, sequence_length, tag_num),
         predicate_score : ``torch.Tensor``, required.
@@ -141,9 +146,12 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
         """
 
         float_mask = mask.float().unsqueeze(-1)
-        predicate_score,pre_intermediates = self.predicte_mlp.get_score(arc_tag_relaxed,predict_representation,intermediates=pre_intermediates)
-        argument_score,arg_intermediates = self.argument_mlp.get_score(arc_tag_relaxed,argument_representation,intermediates=arg_intermediates)
-        return arc_tag_logits* arc_tag_relaxed, predicate_score*float_mask,argument_score*float_mask
+
+        twod_mask =   float_mask.unsqueeze(1)* float_mask.unsqueeze(2)
+        predicate_score,pre_intermediates = self.predicte_mlp.get_score(arc_tag_relaxed*twod_mask,arc_probs*twod_mask,argument_representation,predict_representation,intermediates=intermediates)
+    #    argument_score,arg_intermediates = self.argument_mlp.get_score(arc_tag_relaxed*arc_probs,arc_probs,argument_representation,intermediates=arg_intermediates)
+        return arc_tag_logits* arc_tag_relaxed , \
+               predicate_score*float_mask#,\argument_score*float_mask
 
 
 
@@ -152,6 +160,9 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
                 argument_representation:torch.Tensor,
                 input_arc_tag_logits:torch.Tensor,
                 arc_tag_probs:torch.Tensor,
+                input_arc_logits:torch.Tensor,
+                arc_probs:torch.Tensor,
+               verb_indicator :torch.LongTensor,
                 mask: torch.Tensor,
                 arc_tags:torch.Tensor = None): # pylint: disable=arguments-differ
         '''
@@ -170,49 +181,84 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
         '''
         float_mask = mask.float().unsqueeze(-1)
         batch_size, sequence_length = mask.size()
-        def get_delta_y_gradient(arc_tag_probs):
+        def get_tag_gradient(arc_tag_probs):
             if arc_tags is not None and self.training and False:
                 return - soft_tags
             else:
                 return 0
 
-
         if arc_tags is not None:
-            soft_tags = torch.zeros(batch_size, sequence_length,sequence_length,arc_tag_probs.size(-1), device=arc_tags.device)
-            soft_tags.scatter_(3, arc_tags.unsqueeze(3), 1)
-            soft_tags = soft_tags * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+            soft_tags = torch.zeros(batch_size, sequence_length, sequence_length, arc_tag_probs.size(-1),
+                                    device=arc_tags.device)
+            soft_tags.scatter_(3, arc_tags.unsqueeze(3) + 1, 1)
+            soft_tags = soft_tags* float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
 
         if self.initial_loss:
-            arc_tag_probs_list = [arc_tag_probs ]
-            pre_intermediates_list = [self.predicte_mlp.get_intermediates(arc_tag_probs,predict_representation)]
-            arg_intermediates_list = [self.argument_mlp.get_intermediates(arc_tag_probs,argument_representation)]
+            if self.denoise and self.training:
+
+                gumbel_noise = _sample_gumbel(input_arc_tag_logits.size(), out=input_arc_tag_logits.new())
+                arc_tag_logits =   input_arc_tag_logits + gumbel_noise
+            else:
+
+                arc_tag_logits =   input_arc_tag_logits + get_tag_gradient(arc_tag_probs)
+            arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits,dim=-1)
+
+            # shape (batch_size, sequence_length, sequence_length,1)
+            arc_probs = 1 - arc_tag_probs[:, :, :, 0].unsqueeze(-1)
+
+            arc_probs_list = [arc_probs]
+            arc_tag_probs_list = [ arc_tag_probs ]
+
+            intermediates_list = [self.predicte_mlp.get_intermediates(arc_tag_probs,arc_probs,argument_representation,predict_representation)]
+    #        arg_intermediates_list = [self.argument_mlp.get_intermediates(arc_tag_probs,arc_probs,argument_representation)]
         else:
             arc_tag_probs_list = []
-            pre_intermediates_list = []
-            arg_intermediates_list = []
+            arc_probs_list = []
 
-        for i in range( self.iterations ):
-            predicative_gradient,pre_intermediates = self.predicte_mlp(arc_tag_probs,predict_representation)
-            argument_gradient,arg_intermediates = self.argument_mlp(arc_tag_probs,argument_representation)
-            if self.detach:
-                predicative_gradient = predicative_gradient.detach()
-                argument_gradient = argument_gradient.detach()
-            arc_tag_logits =  input_arc_tag_logits  +predicative_gradient*float_mask.unsqueeze(1) * float_mask.unsqueeze(2)\
-                              + argument_gradient * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)  + get_delta_y_gradient(arc_tag_probs)
+            intermediates_list = []
+      #      arg_intermediates_list = []
+        if self.iterations > 0:
+            for i in range( self.iterations ):
 
-            #    attended_arcs = masked_log_softmax(attended_arcs,mask) * float_mask.unsqueeze(2) * float_mask.unsqueeze(1)
-            if self.training :
-                arc_tag_probs = masked_gumbel_softmax(arc_tag_logits, tau=self.gumbel_t)  * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
-            else:
-                arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits,dim=-1)  * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                masked_arc_probs = arc_probs * float_mask.unsqueeze(1) * float_mask.unsqueeze(2)
+                masked_arc_tag_probs = arc_tag_probs * masked_arc_probs
+
+                arc_tag_logits_grad,predicative_gradient_arc,intermediates = self.predicte_mlp(masked_arc_tag_probs,masked_arc_probs,argument_representation,predict_representation)
+
+                all_grads = torch.zeros(batch_size, sequence_length, sequence_length, arc_tag_probs.size(-1)-1,
+                                    device=arc_tags.device)
+                all_grads = torch.cat([-predicative_gradient_arc,all_grads],dim=-1)
+                arc_tag_logits_grad = arc_tag_logits_grad + all_grads
+          #      argument_gradient,argument_gradient_arc,arg_intermediates = self.argument_mlp(masked_arc_tag_probs,masked_arc_probs,argument_representation)
+                if self.detach:
+                    arc_tag_logits_grad = arc_tag_logits_grad.detach()
+            #        argument_gradient = argument_gradient.detach()
+
+                if self.denoise and self.training:
+
+                    gumbel_noise = _sample_gumbel(arc_tag_logits_grad.size(), out=arc_tag_logits_grad.new())
+                    arc_tag_logits =   input_arc_tag_logits + arc_tag_logits_grad + gumbel_noise
+                else:
+
+                    arc_tag_logits =   input_arc_tag_logits + arc_tag_logits_grad + get_tag_gradient(arc_tag_probs)
+                arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits,dim=-1)
+
+           #     arc_logits = input_arc_logits + predicative_gradient_arc  + argument_gradient_arc + get_arc_gradient(arc_probs)
+
+
+                # shape (batch_size, sequence_length, sequence_length,1)
+                arc_probs = 1 - arc_tag_probs[:, :, :, 0]  # arc_scores.sigmoid()
+                arc_probs = arc_probs.unsqueeze(-1)
 
 
 
-            if self.stright_through:
-                arc_tag_probs = hard(arc_tag_probs,float_mask)
-            arc_tag_probs_list.append(arc_tag_probs)
-            pre_intermediates_list.append(pre_intermediates)
-            arg_intermediates_list.append(arg_intermediates)
+                if self.stright_through and False:
+                    arc_tag_probs = hard(arc_tag_probs,float_mask)
+
+                arc_probs_list.append(arc_probs)
+                arc_tag_probs_list.append(arc_tag_probs)
+                intermediates_list.append(intermediates)
+     #       arg_intermediates_list.append(arg_intermediates)
 
 
-        return arc_tag_probs_list,pre_intermediates_list,arg_intermediates_list
+        return arc_tag_probs_list,arc_probs_list,intermediates_list#,arg_intermediates_list

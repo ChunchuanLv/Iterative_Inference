@@ -1,6 +1,7 @@
 {
     "dataset_reader":{
-        "type":"conll2009"
+        "type":"conll2009",
+      "data_folder":"/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/"
     },
     "train_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt",
     "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt",
@@ -21,27 +22,34 @@
         "vocab_namespace": "pos",
         "sparse": true
       },
+      "pred_embedding":{
+        "embedding_dim": 200,
+        "vocab_namespace": "pred",
+        "sparse": true
+      },
       "encoder": {
         "type": "stacked_bidirectional_lstm",
         "input_size": 400,
-        "hidden_size": 500,
+        "hidden_size": 600,
         "num_layers": 3,
         "recurrent_dropout_probability": 0.3,
         "use_highway": true
       },
-      "refine_representation_dim":200,
       "refiner": {
         "type": "srl_score_refiner",
-        "iterations": 2,
+        "iterations": 0,
         "dropout":0.3,
         "stright_through":false,
-        "hidden_dim": 300,
-        "detach":false,
+        "denoise":true,
+        "hidden_dim": 200,
+        "detach":true,
         "initial_loss":true,
         "gumbel_t":1.0
       },
-      "train_score":true,
+      "train_score":false,
+      "arc_representation_dim":500,
       "tag_representation_dim": 200,
+      "refine_representation_dim":200,
       "dropout": 0.3,
       "input_dropout": 0.3,
       "initializer": [
@@ -58,13 +66,13 @@
     "iterator": {
       "type": "bucket",
       "sorting_keys": [["tokens", "num_tokens"]],
-      "batch_size" : 64
+      "batch_size" : 128
     },
     "evaluate_on_test": true,
     "trainer": {
       "num_epochs": 100,
       "grad_norm": 5.0,
-      "patience": 50,
+      "patience": 30,
       "cuda_device": 2,
       "validation_metric": "+f1",
       "optimizer": {

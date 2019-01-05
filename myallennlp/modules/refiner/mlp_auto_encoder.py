@@ -9,7 +9,7 @@ from allennlp.modules.seq2seq_encoders.seq2seq_encoder import Seq2SeqEncoder
 
 from myallennlp.modules.reparametrization.gumbel_softmax import masked_gumbel_softmax
 
-class MLPForwardBackward(Seq2SeqEncoder):
+class MLPAutoEncoder(Seq2SeqEncoder):
     # pylint: disable=line-too-long
     """
     This class implements the key-value scaled dot product attention mechanism
@@ -44,18 +44,15 @@ class MLPForwardBackward(Seq2SeqEncoder):
                  extra_input_dim: int,
                  hidden_dim: int,
                  sum_dim:int=1,
-                 max:int = 0,
                  leak:float = 0.1,
                  dropout: float = 0.3) -> None:
-        super(MLPForwardBackward, self).__init__()
+        super(MLPAutoEncoder, self).__init__()
         self.sum_dim = sum_dim
         self.dropout = dropout
         self._input_dim  = input_dim+extra_input_dim
         self._output_dim = input_dim
         self.m1 = Linear(input_dim+extra_input_dim, hidden_dim)
-        self.m2 = Linear( hidden_dim,1,bias=False)
-        self.elu = torch.nn.functional.elu
-        self.max = max
+        self.h =  nn.Softplus()
         self.leak = torch.nn.Parameter(torch.FloatTensor([leak/(1-leak)]).log(),requires_grad=False)
     def get_input_dim(self):
         return self._input_dim
@@ -70,19 +67,26 @@ class MLPForwardBackward(Seq2SeqEncoder):
     def get_intermediates(self,
                 inputs: torch.Tensor,
                 graph:torch.Tensor,
-                extra_inputs: torch.Tensor):
+                argue_rep: torch.Tensor,
+                predicate_rep: torch.Tensor,):
         '''
 
         inputs : ``torch.FloatTensor``, required.
             A tensor of shape (batch_size, timesteps, timesteps, input_dim)
+        argue_rep : ``torch.FloatTensor``, required.
+            A tensor of shape (batch_size, timesteps , extra_dim)
+        predicate_rep : ``torch.FloatTensor``, required.
+            A tensor of shape (batch_size, timesteps, extra_dim)
         graph : ``torch.FloatTensor``, required.
             A tensor of shape (batch_size, timesteps, timesteps)
         '''
         intermediates = {}
-        leak =  0*self.leak.sigmoid()
+        leak =  self.leak.sigmoid()
+    #    print ("inputs",inputs.size())
+    #    print ("graph",graph.size())
         inputs = inputs*(graph*(1-leak)+leak)
         inputs = inputs.sum(dim=self.sum_dim)
-        combined_inputs = torch.cat([inputs,extra_inputs],dim=-1)
+        combined_inputs = torch.cat([inputs,predicate_rep],dim=-1)
         intermediates["combined_inputs"] = combined_inputs
 
         h1 = intermediates.setdefault("h1",self.m1(combined_inputs))
@@ -91,37 +95,31 @@ class MLPForwardBackward(Seq2SeqEncoder):
         else:
             dropout_mask = 1
             intermediates["dropout_mask"] = 1
-        h1_dropped = intermediates.setdefault("h1_dropped",h1*dropout_mask)
 
-        h1_non_linear = intermediates.setdefault("h1_non_linear",self.elu (h1_dropped))
+        intermediates.setdefault("h1_dropped",h1*dropout_mask)
 
-        intermediates["h2"] = self.m2 (h1_non_linear )
+
 
         return intermediates
 
 
-    def score(self,h2,intermediates = {}):
+    def score(self,beofre_h,intermediates):
 
-        gate =  intermediates.setdefault("gate",(h2 > self.max ).float())
+        #shape  (batch_size, timesteps, hidden_dim)
+        score =  intermediates.setdefault("score",self.h(beofre_h) )
 
-        t = intermediates.setdefault("t",(h2-self.max).tanh())
-        score =  intermediates.setdefault("score",gate*(t+self.max) + (1-gate)*h2)
-
-        low_gate = (h2 > -self.max ).float()
-        score = score*low_gate + (1-low_gate)*(h2+self.max).tanh()
         return score,intermediates
 
-    def score_gradient(self,h2,intermediates={}):
-        gate =  intermediates.setdefault("gate",(h2 > self.max ).float())
+    def score_gradient(self,beofre_h,intermediates={}):
+        gradient =  intermediates.setdefault("gate",beofre_h.sigmoid())
 
-        t = intermediates.setdefault("t",(h2-self.max).tanh())
-        gradient = 1 - gate* t*t
         return gradient,intermediates
 
     def get_score(self,
                 inputs: torch.Tensor,
                 graph:torch.Tensor,
-                extra_inputs: torch.Tensor,
+                argue_rep: torch.Tensor,
+                predicate_rep: torch.Tensor,
                 intermediates:Dict = {}):
         '''
 
@@ -129,14 +127,15 @@ class MLPForwardBackward(Seq2SeqEncoder):
             A tensor of shape (batch_size, timesteps, timesteps, input_dim)
         '''
         if intermediates is None or len(intermediates)==0:
-            intermediates = self.get_intermediates(inputs,graph,extra_inputs)
+            intermediates = self.get_intermediates(inputs,graph,argue_rep,predicate_rep)
 
-        return  self.score(intermediates["h2"],intermediates)
+        return  self.score(intermediates["h1_dropped"],intermediates)
     @overrides
     def forward(self,  # pylint: disable=arguments-differ
                 inputs: torch.Tensor,
                 graph:torch.Tensor,
-                extra_inputs: torch.Tensor,
+                argue_rep: torch.Tensor,
+                predicate_rep: torch.Tensor,
                 intermediates:Dict={}) -> torch.FloatTensor:
         """
         Parameters
@@ -155,25 +154,16 @@ class MLPForwardBackward(Seq2SeqEncoder):
         gradient w.r.t to score m1 Relu m2 input
         """
         if intermediates is None or len(intermediates)==0:
-            intermediates = self.get_intermediates(inputs,graph,extra_inputs)
+            intermediates = self.get_intermediates(inputs,graph,argue_rep,predicate_rep)
 
-        leak = 0* self.leak.sigmoid()
-        # shape  (batch_size, timesteps, 1)
-        gradient_to_h2, intermediates = self.score_gradient(intermediates["h2"],intermediates)
-    #    gradient_to_h2 = gradient_to_h2.unsqueeze(1)
+        leak = self.leak.sigmoid()
+        # shape  (batch_size, timesteps, hidden_dim)
+        gradient_to_h, intermediates = self.score_gradient(intermediates["h1_dropped"],intermediates)
 
-        # shape  (batch_size, timesteps, hidden_dim) weight is (1,hidden_dim) vector
-        gradient_to_h = gradient_to_h2   * self.m2.weight.unsqueeze(0)
-
-        h1_dropped = intermediates["h1_dropped"]
         dropout_mask = intermediates["dropout_mask"]
-        sign = (torch.sign(h1_dropped)+1)/2
 
         #shape  (batch_size, timesteps, hidden_dim)
-        gate = (sign + (1-sign) * torch.exp(h1_dropped))*dropout_mask
-
-        #shape  (batch_size, timesteps, hidden_dim)
-        gradient_to_h = gate * gradient_to_h
+        gradient_to_h = gradient_to_h *dropout_mask
 
         #shape  (batch_size, timesteps, 1, input_dim) or  (batch_size , 1 , timesteps, input_dim)
         gradient_to_summed_input = gradient_to_h.matmul(self.m1.weight[:,:inputs.size(-1)]).unsqueeze(self.sum_dim)
@@ -185,17 +175,18 @@ class MLPForwardBackward(Seq2SeqEncoder):
 
 
 def main():
-    mlpfbb = MLPForwardBackward(2,3,15,1,10,0.1)
+    mlpfbb = MLPAutoEncoder(2,3,15)
 
     input = torch.rand(1,3,3,2)
     graph = torch.rand(1,3,3,1)
     input.requires_grad = True
     graph.requires_grad = True
     extra = torch.rand(1,3,3)
+    extra2 = torch.rand(1,3,3)
     intermediates = None
 
-    gradient_to_input,gradient_to_graph,intermediates = mlpfbb(input,graph,extra,intermediates=intermediates)
-    score ,intermediates= mlpfbb.get_score(input,graph,extra,intermediates=intermediates)
+    score ,intermediates= mlpfbb.get_score(input,graph,extra,extra2,intermediates=intermediates)
+    gradient_to_input,gradient_to_graph,intermediates = mlpfbb(input,graph,extra,extra2,intermediates=intermediates)
 
 
 

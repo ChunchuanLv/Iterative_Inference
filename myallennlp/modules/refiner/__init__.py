@@ -2,3 +2,4 @@ from myallennlp.modules.refiner.score_based_refiner import ScoreBasedRefiner
 from myallennlp.modules.refiner.srl_score_based_refiner import SRLScoreBasedRefiner
 
 from myallennlp.modules.refiner.mlp_forward_backward import MLPForwardBackward
+from myallennlp.modules.refiner.mlp_auto_encoder import MLPAutoEncoder

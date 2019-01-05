@@ -14,14 +14,18 @@ class IterativeLabeledF1Measure(Metric):
     the tag you are interested in, resulting in the Precision, Recall and F1 score being
     calculated for this tag only.
     """
-    def __init__(self, negative_label: int) -> None:
+    def __init__(self, negative_label: int,negative_pred:int) -> None:
         self._negative_label = negative_label
+        self._negative_pred = negative_pred
         self.labeled_f1_scores = {}
 
     def __call__(self,
                  predictions: torch.Tensor,
                  gold_labels: torch.Tensor,
-                 mask: Optional[torch.Tensor] = None,
+                 mask: Optional[torch.Tensor],
+                 pred_probs: torch.Tensor,
+                 pred_candidates: torch.Tensor,
+                 gold_pred: torch.Tensor,
                  n_iteration:int=0):
         """
         Parameters
@@ -34,9 +38,9 @@ class IterativeLabeledF1Measure(Metric):
         mask: ``torch.Tensor``, optional (default = None).
             A masking tensor the same size as ``gold_labels``.
         """
-        labeled_f1 = self.labeled_f1_scores.setdefault(n_iteration,LabeledF1Measure(self._negative_label ))
+        labeled_f1 = self.labeled_f1_scores.setdefault(n_iteration,LabeledF1Measure(self._negative_label ,self._negative_pred))
 
-        labeled_f1(predictions,gold_labels,mask=mask)
+        labeled_f1(predictions,gold_labels,mask,pred_probs,pred_candidates,gold_pred)
 
     def get_metric(self, reset: bool = False,training=True):
         """
@@ -59,7 +63,7 @@ class IterativeLabeledF1Measure(Metric):
 
             metrics =  self.labeled_f1_scores[iterations].get_metric()
             for metric in metrics:
-                all_metrics[metric+str(iterations)] = metrics[metric]
+                all_metrics[metric+"_"+str(iterations)] = metrics[metric]
 
         iterations =  len(self.labeled_f1_scores)-1
 
