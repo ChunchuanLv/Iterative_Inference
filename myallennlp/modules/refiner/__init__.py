@@ -3,3 +3,4 @@ from myallennlp.modules.refiner.srl_score_based_refiner import SRLScoreBasedRefi
 
 from myallennlp.modules.refiner.mlp_forward_backward import MLPForwardBackward
 from myallennlp.modules.refiner.mlp_auto_encoder import MLPAutoEncoder
+from myallennlp.modules.refiner.graph_auto_encoder import GraphAutoEncoder

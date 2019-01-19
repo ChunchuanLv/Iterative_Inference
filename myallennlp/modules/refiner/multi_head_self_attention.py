@@ -41,6 +41,7 @@ class SelfAttentionRefinment(Seq2SeqEncoder):
     """
     def __init__(self,
                  num_heads: int,
+                 extra_rels: int,
                  input_dim: int,
                  attention_dim: int,
                  values_dim: int,
@@ -49,6 +50,7 @@ class SelfAttentionRefinment(Seq2SeqEncoder):
         super(SelfAttentionRefinment, self).__init__()
 
         self._num_heads = num_heads
+        self.extra_rels = extra_rels
         self._input_dim = input_dim
         self._output_dim = output_projection_dim or input_dim
         self._attention_dim = attention_dim

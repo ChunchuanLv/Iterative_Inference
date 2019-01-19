@@ -61,11 +61,20 @@ class LabeledF1Measure(Metric):
                                      "the number of classes.".format(num_classes))
         mask = mask.float()
         gold_labels = gold_labels.float()
+
+        if gold_labels.size(-1) == 1:
+            gold_labels = gold_labels.squeeze(-1)
+        if mask.size(-1) == 1:
+            mask = mask.squeeze(-1)
         negative_label_mask = gold_labels.eq(self._negative_label).float()
         positive_label_mask = 1.0 - negative_label_mask
 
         argmax_predictions = predictions.max(-1)[1].float().squeeze(-1)
 
+
+        assert argmax_predictions.size() == negative_label_mask.size(),(argmax_predictions.size(),negative_label_mask.size())
+        assert argmax_predictions.size() == gold_labels.size(),(argmax_predictions.size(),gold_labels.size())
+        assert negative_label_mask.size() == mask.size(),(negative_label_mask.size(),mask.size())
         # True Negatives: correct non-positive predictions.
         correct_null_predictions = (argmax_predictions ==
                                     gold_labels).float() * negative_label_mask
@@ -114,7 +123,7 @@ class LabeledF1Measure(Metric):
 
 
 
-
+        pred_mask = (gold_pred>0).float()
         negative_label_mask = gold_pred.eq(self._negative_pred).float()
         positive_label_mask = 1.0 - negative_label_mask
 
@@ -130,22 +139,22 @@ class LabeledF1Measure(Metric):
         # True Negatives: correct non-positive predictions.
         correct_null_predictions = (pred_argmax ==
                                     gold_pred).float() * negative_label_mask
-        self._pred_true_negatives += (correct_null_predictions.float() ).sum()
+        self._pred_true_negatives += (correct_null_predictions.float() *pred_mask).sum()
 
         # True Positives: correct positively labeled predictions.
         correct_non_null_predictions = (pred_argmax ==
                                         gold_pred).float() * positive_label_mask
-        self._pred_true_positives += (correct_non_null_predictions ).sum()
+        self._pred_true_positives += (correct_non_null_predictions *pred_mask).sum()
 
         # False Negatives: incorrect negatively labeled predictions.
         incorrect_null_predictions = (pred_argmax !=
                                       gold_pred).float() * positive_label_mask
-        self._pred_false_negatives += (incorrect_null_predictions ).sum()
+        self._pred_false_negatives += (incorrect_null_predictions *pred_mask).sum()
 
         # False Positives: incorrect positively labeled predictions
         incorrect_non_null_predictions = (pred_argmax !=
                                           gold_pred).float() * negative_label_mask
-        self._pred_false_positives += (incorrect_non_null_predictions ).sum()
+        self._pred_false_positives += (incorrect_non_null_predictions *pred_mask).sum()
 
 
 
@@ -167,6 +176,12 @@ class LabeledF1Measure(Metric):
         f1_measure = 2. * ((precision * recall) / (precision + recall + 1e-13))
 
 
+
+        label_precision = float(self._true_positives) / float(self._true_positives + self._false_positives + 1e-13)
+        label_recall = float(self._true_positives) / float(self._true_positives + self._false_negatives + 1e-13)
+        label_f1_measure = 2. * ((label_precision * label_recall) / (label_precision + label_recall + 1e-13))
+
+
         pred_precision = float(self._pred_true_positives) / float(self._pred_true_positives + self._pred_false_positives + 1e-13)
         pred_recall = float(self._pred_true_positives) / float(self._pred_true_positives + self._pred_false_negatives + 1e-13)
         pred_f1_measure = 2. * ((pred_precision * pred_recall) / (pred_precision + pred_recall + 1e-13))
@@ -183,8 +198,10 @@ class LabeledF1Measure(Metric):
         metrics = {}
         metrics["u_pre"] = format(un_precision)
         metrics["u_re"] =   format(un_recall)
+
         metrics["un_f1"] =   format(un_f1_measure)
         metrics["pred_f1"] =   format(pred_f1_measure)
+        metrics["lab_f1"] =   format(label_f1_measure)
 
         metrics["pre"] =  format(precision)
         metrics["re"] =   format(recall)

@@ -1,35 +1,39 @@
 {
-    "dataset_reader":{
-        "type":"conll2009",
-      "data_folder":"/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/"
-    },
-    "train_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt",
-    "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt",
-    "test_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt",
-    "model": {
-      "type": "srl_graph_parser",
-      "text_field_embedder": {
-        "tokens": {
-          "type": "embedding",
-          "embedding_dim": 300,
-          "pretrained_file": "/disk/scratch/s1544871/glove.840B.300d.txt",
-          "trainable": true,
-          "sparse": true
-        }
+  "dataset_reader": {
+    "type": "conll2009",
+    "data_folder": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/",
+    "token_indexers": {
+      "elmo": {
+        "type": "elmo_characters"
+      }
+    }
+  },
+  "train_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt",
+  "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt",
+  "test_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt",
+  "model": {
+    "type": "srl_graph_parser",
+    "text_field_embedder": {
+      "elmo": {
+        "type": "elmo_token_embedder",
+        "options_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_options.json",
+        "weight_file": "/disk/scratch/s1544871/elmo//elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+        "dropout": 0
+      }
       },
-      "pos_tag_embedding":{
+      "pos_tag_embedding": {
         "embedding_dim": 100,
         "vocab_namespace": "pos",
         "sparse": true
       },
-      "pred_embedding":{
-        "embedding_dim": 200,
-        "vocab_namespace": "pred",
+      "predicate_embedding": {
+        "embedding_dim": 128,
+        "vocab_namespace": "predicates",
         "sparse": true
       },
       "encoder": {
         "type": "stacked_bidirectional_lstm",
-        "input_size": 400,
+        "input_size": 1124,
         "hidden_size": 600,
         "num_layers": 3,
         "recurrent_dropout_probability": 0.3,
@@ -37,36 +41,82 @@
       },
       "refiner": {
         "type": "srl_score_refiner",
-        "iterations": 0,
-        "dropout":0.3,
-        "stright_through":false,
-        "denoise":true,
-        "hidden_dim": 200,
-        "detach":true,
-        "initial_loss":true,
-        "gumbel_t":1.0
+        "iterations": 1,
+        "dropout": 0.3,
+        "stright_through": true,
+        "denoise": true,
+        "hidden_dim": 32,
+        "score_dim": 32,
+        "detach": true,
+        "gumbel_t": 1.0
       },
-      "train_score":false,
-      "arc_representation_dim":500,
-      "tag_representation_dim": 200,
-      "refine_representation_dim":200,
+      "train_score": true,
+      "train_gold":true,
+      "arc_representation_dim": 400,
+      "tag_representation_dim": 128,
       "dropout": 0.3,
       "input_dropout": 0.3,
       "initializer": [
-        [".*feedforward.*weight", {"type": "xavier_uniform"}],
-        [".*feedforward.*bias", {"type": "zero"}],
-        [".*tag_bilinear.*weight", {"type": "xavier_uniform"}],
-        [".*tag_bilinear.*bias", {"type": "zero"}],
-        [".*weight_ih.*", {"type": "xavier_uniform"}],
-        [".*weight_hh.*", {"type": "orthogonal"}],
-        [".*bias_ih.*", {"type": "zero"}],
-        [".*bias_hh.*", {"type": "lstm_hidden_bias"}]]
+        [
+          ".*feedforward.*weight",
+          {
+            "type": "xavier_uniform"
+          }
+        ],
+        [
+          ".*feedforward.*bias",
+          {
+            "type": "zero"
+          }
+        ],
+        [
+          ".*tag_bilinear.*weight",
+          {
+            "type": "xavier_uniform"
+          }
+        ],
+        [
+          ".*tag_bilinear.*bias",
+          {
+            "type": "zero"
+          }
+        ],
+        [
+          ".*weight_ih.*",
+          {
+            "type": "xavier_uniform"
+          }
+        ],
+        [
+          ".*weight_hh.*",
+          {
+            "type": "orthogonal"
+          }
+        ],
+        [
+          ".*bias_ih.*",
+          {
+            "type": "zero"
+          }
+        ],
+        [
+          ".*bias_hh.*",
+          {
+            "type": "lstm_hidden_bias"
+          }
+        ]
+      ]
     },
-
     "iterator": {
       "type": "bucket",
-      "sorting_keys": [["tokens", "num_tokens"]],
-      "batch_size" : 128
+      "biggest_batch_first": true,
+      "sorting_keys": [
+        [
+          "tokens",
+          "num_tokens"
+        ]
+      ],
+      "batch_size": 64
     },
     "evaluate_on_test": true,
     "trainer": {
@@ -77,8 +127,10 @@
       "validation_metric": "+f1",
       "optimizer": {
         "type": "dense_sparse_adam",
-        "betas": [0.9, 0.9]
+        "betas": [
+          0.9,
+          0.9
+        ]
       }
     }
   }
-

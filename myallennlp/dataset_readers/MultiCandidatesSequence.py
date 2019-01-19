@@ -52,17 +52,16 @@ class MultiCandidatesSequence(Field[torch.Tensor]):
 
     def __init__(self,
                  labels: Sequence[List[Union[str, int]]],
-                 sequence_field: SequenceField,
                  label_namespace: str = 'pred',
                  skip_indexing: bool = False,
                  num_labels: Optional[int] = None) -> None:
         self.labels = labels
         self._label_namespace = label_namespace
-        self.sequence_field = sequence_field
         self._label_ids = None
         self._maybe_warn_for_namespace(label_namespace)
         max_senses = max([len(labels) for labels in self.labels]+[1])
         self._num_labels = max_senses
+
         for candidates in labels:
             if len(candidates) > self._num_labels:
                 self._num_labels = len(candidates)
@@ -111,16 +110,17 @@ class MultiCandidatesSequence(Field[torch.Tensor]):
 
         max_senses = max([len(labels) for labels in self.labels]+[1])
         self._num_labels = max_senses
-        return {'num_tokens': self.sequence_field.sequence_length(),"max_senses":max_senses}
+
+        return { "num_heads": max(len(self.labels),1),"max_senses":max_senses}
 
     @overrides
     def as_tensor(self, padding_lengths: Dict[str, int]) -> torch.Tensor:
         # pylint: disable=unused-argument
 
-        desired_num_tokens = padding_lengths['num_tokens']
+        num_heads = padding_lengths['num_heads']
         max_senses  = padding_lengths['max_senses']
 
-        tensor = torch.zeros(desired_num_tokens,max_senses).long()  # vector of zeros
+        tensor = torch.zeros(num_heads,max_senses).long()  # vector of zeros
         if self._label_ids:
             for i in range(len(self._label_ids)):
                 if len(self._label_ids[i]) > 0:

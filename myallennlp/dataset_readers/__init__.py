@@ -10,3 +10,6 @@ and produce datasets in the formats required by specific models.
 from myallennlp.dataset_readers.conll2009 import Conll2009DatasetReader
 
 from myallennlp.dataset_readers.MultiCandidatesSequence import MultiCandidatesSequence
+from myallennlp.dataset_readers.multiindex_field import MultiIndexField
+from myallennlp.dataset_readers.nonsquare_adjacency_field import NonSquareAdjacencyField
+from myallennlp.dataset_readers.index_sequence_label_field import IndexSequenceLabelField

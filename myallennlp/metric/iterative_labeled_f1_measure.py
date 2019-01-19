@@ -14,15 +14,16 @@ class IterativeLabeledF1Measure(Metric):
     the tag you are interested in, resulting in the Precision, Recall and F1 score being
     calculated for this tag only.
     """
-    def __init__(self, negative_label: int,negative_pred:int) -> None:
+    def __init__(self, negative_label: int,negative_pred:int,selected_metrics = []) -> None:
         self._negative_label = negative_label
         self._negative_pred = negative_pred
         self.labeled_f1_scores = {}
+        self.selected_metrics = selected_metrics
 
     def __call__(self,
                  predictions: torch.Tensor,
                  gold_labels: torch.Tensor,
-                 mask: Optional[torch.Tensor],
+                graph_mask: Optional[torch.Tensor],
                  pred_probs: torch.Tensor,
                  pred_candidates: torch.Tensor,
                  gold_pred: torch.Tensor,
@@ -40,7 +41,7 @@ class IterativeLabeledF1Measure(Metric):
         """
         labeled_f1 = self.labeled_f1_scores.setdefault(n_iteration,LabeledF1Measure(self._negative_label ,self._negative_pred))
 
-        labeled_f1(predictions,gold_labels,mask,pred_probs,pred_candidates,gold_pred)
+        labeled_f1(predictions,gold_labels,graph_mask,pred_probs,pred_candidates,gold_pred)
 
     def get_metric(self, reset: bool = False,training=True):
         """
@@ -54,7 +55,7 @@ class IterativeLabeledF1Measure(Metric):
         all_metrics = {}
    #     all_metrics["cool_down"] = self.cool_down/self._total_sentences
         sorted_scores = sorted(self.labeled_f1_scores)
-        if training:
+        if training and False:
             sorted_scores = [sorted_scores[0]] if len(sorted_scores) > 1 else []
         else:
             sorted_scores = sorted_scores[:-1]
@@ -63,13 +64,18 @@ class IterativeLabeledF1Measure(Metric):
 
             metrics =  self.labeled_f1_scores[iterations].get_metric()
             for metric in metrics:
-                all_metrics[metric+"_"+str(iterations)] = metrics[metric]
+                if len(self.selected_metrics)== 0 or metric in self.selected_metrics:
+                    all_metrics[metric+"_"+str(iterations)] = metrics[metric]
 
-        iterations =  len(self.labeled_f1_scores)-1
+
+        sorted_scores = sorted(self.labeled_f1_scores)
+
+        iterations =  sorted_scores[-1]
 
         metrics =  self.labeled_f1_scores[iterations].get_metric()
         for metric in metrics:
-            all_metrics[metric] = metrics[metric]
+            if len(self.selected_metrics)== 0 or metric in self.selected_metrics:
+                all_metrics[metric] = metrics[metric]
         if reset:
             self.reset()
         return all_metrics
