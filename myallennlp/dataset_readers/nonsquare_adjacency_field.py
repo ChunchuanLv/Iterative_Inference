@@ -103,8 +103,10 @@ class NonSquareAdjacencyField(Field[torch.Tensor]):
 
     @overrides
     def as_tensor(self, padding_lengths: Dict[str, int]) -> torch.Tensor:
-        desired_num_tokens = padding_lengths['num_tokens']
+        desired_num_tokens =padding_lengths['num_tokens']
         desired_num_heads = padding_lengths[self._label_namespace+'num_heads']
+
+        assert desired_num_tokens > 0 and desired_num_heads > 0,(desired_num_tokens,desired_num_heads,str(self))
         tensor = torch.ones(desired_num_tokens, desired_num_heads) * self._padding_value
 
         labels = self._indexed_labels or [1 for _  in range(len(self.indices))]

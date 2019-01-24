@@ -46,6 +46,7 @@ class GraphAutoEncoder(Seq2SeqEncoder):
         distributions.
     """
     def __init__(self,
+                 input_node_dim:int,
                  node_dim: int,
                  edge_dim: int,
                  hidden_dim: int,
@@ -55,11 +56,13 @@ class GraphAutoEncoder(Seq2SeqEncoder):
         super(GraphAutoEncoder, self).__init__()
         self.dropout = dropout
         self._dropout = Dropout(dropout)
+        self._input_node_dim  = input_node_dim
         self._node_dim  = node_dim
         self._edge_dim  = edge_dim
         self._hidden_dim = hidden_dim
         self._edge_embed = Linear(edge_dim, node_dim)
 
+        self._node_embed = Linear(input_node_dim, node_dim)
         self.h = nn.functional.softplus
 
         self.sigmoid = nn.functional.sigmoid
@@ -121,7 +124,14 @@ class GraphAutoEncoder(Seq2SeqEncoder):
 
 
 
-        graph = ComputationGraph("linear_score",["nodes","edges"],["extra_nodes"])
+        graph = ComputationGraph("linear_score",["input_nodes","edges"],["extra_nodes"])
+
+        # A tensor of shape (batch_size, timesteps, pre_len ,hidden_dim)
+        graph.add_node(ComputationNode("nodes",["input_nodes"],
+                                       self._node_embed,
+                                       lambda grad,nodes, input_nodes: [grad.matmul(self._node_embed.weight) ]))
+
+
 
 
         def tmp( grad, edge_rep,edges):
@@ -178,8 +188,9 @@ class GraphAutoEncoder(Seq2SeqEncoder):
                                        lambda combined_message,edge_rep: combined_message + self._edge_embed_to_score_m(edge_rep),
                                        lambda grad,linear_score, combined_message,edge_rep: [grad,grad.matmul(self._edge_embed_to_score_m.weight) ]))
 
-        graph.forward([nodes,edges],[extra_nodes])
+    #    print ("graph order",graph.get_backward_order())
 
+        graph.forward([nodes,edges],[extra_nodes])
         return graph
 
 

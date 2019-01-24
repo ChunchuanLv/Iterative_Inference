@@ -14,14 +14,11 @@ from allennlp.data.fields import Field, TextField, SequenceLabelField, MetadataF
 from allennlp.data.instance import Instance
 from allennlp.data.token_indexers import SingleIdTokenIndexer, TokenIndexer
 from allennlp.data.tokenizers import Token
-from allennlp.data.iterators import BucketIterator
-from allennlp.data.vocabulary import DEFAULT_PADDING_TOKEN,DEFAULT_OOV_TOKEN
-NEGATIVE_PRED = "_"
 from myallennlp.dataset_readers.MultiCandidatesSequence import MultiCandidatesSequence
 from myallennlp.dataset_readers.multiindex_field import MultiIndexField
 from myallennlp.dataset_readers.nonsquare_adjacency_field import NonSquareAdjacencyField
 from myallennlp.dataset_readers.index_sequence_label_field import IndexSequenceLabelField
-
+import difflib
 import xml.etree.ElementTree as ET
 
 def folder_to_files_path(folder,ends =".txt"):
@@ -120,6 +117,8 @@ def lazy_parse(text: str):
             yield parse_sentence(sentence)
 
 
+import json
+import os
 
 @DatasetReader.register("conll2009")
 class Conll2009DatasetReader(DatasetReader):
@@ -137,18 +136,37 @@ class Conll2009DatasetReader(DatasetReader):
     def __init__(self,
                  token_indexers: Dict[str, TokenIndexer] = None,
                  use_gold: bool = False,
+                 filter:bool=True,
                  lazy: bool = False,
+                 read_frame_new:bool=False,
                  data_folder = None) -> None:
         super().__init__(lazy)
         self._token_indexers = token_indexers or {'tokens': SingleIdTokenIndexer()}
         self.use_gold = use_gold
-        self.lemma_to_sensed = self.read_frames(data_folder)
+        self.filter = filter
+        self.data_folder = data_folder
+        self.lemma_to_sensed = self.read_frames(data_folder,read_frame_new)
+        self.annotated_sentences = []
 
-    def read_frames(self,data_folder):
+    def save_frames(self,data_folder = None):
+        if data_folder is None:
+            data_folder = self.data_folder
+
+        for lemma in self.lemma_to_sensed:
+            assert len(self.lemma_to_sensed[lemma]) > 0,(lemma,self.lemma_to_sensed[lemma])
+
+        with open(data_folder+'/senses.json', 'w+') as outfile:
+            json.dump(self.lemma_to_sensed, outfile)
+
+    def read_frames(self,data_folder,read_frame_new):
+        if os.path.exists(data_folder+'/senses.json') and not read_frame_new:
+            with open(data_folder+'/senses.json') as infile:
+                return defaultdict(lambda: [], **json.load(infile))
+
         nbbank = PropbankReader(data_folder+"/nb_frames").get_frames()
         pbbank = PropbankReader(data_folder+"/pb_frames").get_frames()
 
-        out = defaultdict(lambda:[],nbbank)
+        out = defaultdict(lambda:[],**nbbank)
         for lemma in pbbank:
             if lemma in out:
                 for pred in pbbank[lemma]:
@@ -156,6 +174,7 @@ class Conll2009DatasetReader(DatasetReader):
                         out[lemma].append(pred)
             else:
                 out[lemma] = pbbank[lemma]
+        out["find-out"] = out["find"]
         return  out
 
     @overrides
@@ -164,17 +183,18 @@ class Conll2009DatasetReader(DatasetReader):
         file_path = cached_path(file_path)
         training = "train" in file_path or "development" in file_path
         logger.info("Reading conll2009 srl data from: %s", file_path)
-
+   #     print ("reading", file_path)
         with open(file_path) as sdp_file:
             for annotated_sentence, directed_arc_indices, arc_tags , predicates_indexes in lazy_parse(sdp_file.read()):
                 # If there are no arc indices, skip this instance.
-                if not directed_arc_indices:
-                    continue
+              #  if not directed_arc_indices and self.filter:
+               #     continue
+                self.annotated_sentences.append(annotated_sentence)
                 tokens = [word["form"] for word in annotated_sentence]
                 pred_candidates, sense_indexes, predicates = self.data_for_sense_prediction(annotated_sentence,training)
                 pos_tags = [word["pos"] for word in annotated_sentence] if self.use_gold else [word["ppos"] for word in annotated_sentence]
-       #         verb_indicator = [1 if word["fillpred"] == "Y" else 0 for word in annotated_sentence]
-                yield self.text_to_instance(tokens, predicates_indexes,pos_tags, directed_arc_indices, arc_tags,pred_candidates, sense_indexes, predicates)
+                dep_tags = [word["deprel"] for word in annotated_sentence] if self.use_gold else [word["pdeprel"] for word in annotated_sentence]
+                yield self.text_to_instance(tokens, predicates_indexes,pos_tags, dep_tags,directed_arc_indices, arc_tags,pred_candidates, sense_indexes, predicates)
 
 
     def data_for_sense_prediction(self,annotated_sentence,training):
@@ -184,38 +204,34 @@ class Conll2009DatasetReader(DatasetReader):
         for word in annotated_sentence:
             if word["fillpred"] == "Y":
                 pred = word["pred"]
-                lemma = word["lemma"] if self.use_gold else word["plemma"]
-                if pred not in self.lemma_to_sensed[lemma] :
-                    if training:
-                        self.lemma_to_sensed[lemma].append(pred)
-                        sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
-                        pred_candidates.append(self.lemma_to_sensed[lemma] )
-                    else:
-                        if  lemma in self.lemma_to_sensed:
-                            pred_candidates.append(self.lemma_to_sensed[lemma] )
-                            if pred in self.lemma_to_sensed[lemma]:
-                                sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
-                            else:
-                                sense_indexes.append(0)
-                        elif lemma.endswith("s") and lemma[:-1] in self.lemma_to_sensed:
-                            pred_candidates.append(self.lemma_to_sensed[lemma[:-1]] )
-                            if pred in self.lemma_to_sensed[lemma]:
-                                sense_indexes.append(self.lemma_to_sensed[lemma[:-1]].index(pred ))
-                            else:
-                                sense_indexes.append(0)
-                        else:
-                #            print (word["lemma"],word["plemma"],self.lemma_to_sensed[word["lemma"]],self.lemma_to_sensed[word["plemma"]],word["pred"])
-                            sense_indexes.append(0)
-                            pred_candidates.append([lemma+".01"])
-                else:
+                lemma = word["plemma"]
+                if lemma in self.lemma_to_sensed and pred  in self.lemma_to_sensed[lemma] :
                     sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
                     pred_candidates.append(self.lemma_to_sensed[lemma] )
+                elif training:
+        #            print ("train adding",lemma,self.lemma_to_sensed[lemma] + [pred])
+                    self.lemma_to_sensed[lemma].append(pred)
+                    sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
+                    pred_candidates.append(self.lemma_to_sensed[lemma] )
+                else:
+                    similar_lemma = difflib.get_close_matches(lemma, self.lemma_to_sensed.keys(),n=1,cutoff=0.9) # could be it self
+                    if similar_lemma and  similar_lemma[0] in self.lemma_to_sensed:
+                        similar_lemma = similar_lemma[0]
+                #        print ("lemma,similar_lemma,self.lemma_to_sensed[similar_lemma], pred",lemma,similar_lemma,self.lemma_to_sensed[similar_lemma],pred)
+                        pred_candidates.append(self.lemma_to_sensed[similar_lemma] )
+                        sense_indexes.append(0)
+                    else:
+                 #       print ("test empty nothing similar",lemma,pred)
+                        sense_indexes.append(0)
+                        pred_candidates.append([lemma+".01"])
+
         return pred_candidates,sense_indexes,predicates
     @overrides
     def text_to_instance(self, # type: ignore
                          tokens: List[str],
                          predicates_indexes: List[int],
-                         pos_tags: List[str] = None,
+                         pos_tags: List[str] ,
+                         dep_tags: List[str] ,
                          arc_indices: List[Tuple[int, int]] = None,
                          arc_tags: List[str] = None,
                          pred_candidates:List[List[str]] = None,
@@ -228,18 +244,18 @@ class Conll2009DatasetReader(DatasetReader):
         assert len(pred_candidates) == len(sense_indexes)
         assert len(pred_candidates) == len(predicates)
 
-        assert max(predicates_indexes) < len(tokens)
+        assert len(predicates_indexes) == 0 or max(predicates_indexes) < len(tokens)
         fields["tokens"] = token_field
-        fields["predicate_indexes"] = MultiIndexField(predicates_indexes,label_namespace = "predicate_indexes")
+        fields["predicate_indexes"] = MultiIndexField(predicates_indexes,label_namespace = "predicate_indexes",padding_value=-1)
         fields["metadata"] = MetadataField({"tokens": tokens})
-        if pos_tags is not None:
-            fields["pos_tags"] = SequenceLabelField(pos_tags, token_field, label_namespace="pos")
+        fields["pos_tags"] = SequenceLabelField(pos_tags, token_field, label_namespace="pos")
+        fields["dep_tags"] = SequenceLabelField(dep_tags, token_field, label_namespace="dep")
         if arc_indices is not None and arc_tags is not None:
             fields["arc_tags"] = NonSquareAdjacencyField(arc_indices, token_field, fields["predicate_indexes"], arc_tags,label_namespace="tags")
 
         fields["predicates"] = IndexSequenceLabelField(predicates,label_namespace="predicates")
         fields["predicate_candidates"] = MultiCandidatesSequence(pred_candidates, label_namespace="predicates")
-        fields["sense_indexes"] = MultiIndexField(sense_indexes, label_namespace="sense_indexes")
+        fields["sense_indexes"] = MultiIndexField(sense_indexes, label_namespace="sense_indexes",padding_value=0)
 
         return Instance(fields)
 
@@ -247,22 +263,27 @@ class Conll2009DatasetReader(DatasetReader):
 
 
 def main():
+    data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English"
+   # reader = Conll2009DatasetReader(data_folder = data_folder)
+
+   # train_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt")
+   # dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt")
+
+   # reader.save_frames()
+
     reader = Conll2009DatasetReader(data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English")
-    print ("n sense",reader.max_sense)
-    for i,b in enumerate(reader.lemma_to_sensed):
-        print (b,reader.lemma_to_sensed[b])
-        if i > 10: break
-    train_data = reader._read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt")
 
 
-    print ("n sense",reader.get_max_sense())
+    dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt")
 
-
-    dev_data = reader._read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt")
-    for i,b in enumerate(dev_data):
-        print (b)
-        if i > 10: return
-
+    if os.path.exists(data_folder + '/senses.json'):
+        with open(data_folder + '/senses.json') as infile:
+            frames = defaultdict(lambda: [], **json.load(infile))
+            for lemma in ["inheritor","frying"]:
+                assert lemma in frames
+                print ("empty?",lemma,frames[lemma])
+    assert False
+    lemma = "breaker"
 
 if __name__ == "__main__":
     main()

@@ -34,6 +34,7 @@ class LabeledF1Measure(Metric):
         self._pred_false_positives = 0.0
         self._pred_false_negatives = 0.0
 
+        self.scores = 0.0
 
     def __call__(self,
                  predictions: torch.Tensor,
@@ -41,7 +42,8 @@ class LabeledF1Measure(Metric):
                  mask: Optional[torch.Tensor] ,
                  pred_probs: torch.Tensor,
                  pred_candidates: torch.Tensor,
-                 gold_pred: torch.Tensor,):
+                 gold_pred: torch.Tensor,
+                 scores:torch.Tensor):
         """
         Parameters
         ----------
@@ -53,8 +55,9 @@ class LabeledF1Measure(Metric):
         mask: ``torch.Tensor``, optional (default = None).
             A masking tensor the same size as ``gold_labels``.
         """
-        predictions, gold_labels, mask, pred_probs,pred_candidates,gold_pred = self.unwrap_to_tensors(predictions, gold_labels, mask,pred_probs,pred_candidates,gold_pred)
+        predictions, gold_labels, mask, pred_probs,pred_candidates,gold_pred,scores = self.unwrap_to_tensors(predictions, gold_labels, mask,pred_probs,pred_candidates,gold_pred,scores)
 
+        self.scores += scores.mean().item()
         num_classes = predictions.size(-1)
         if (gold_labels >= num_classes).any():
             raise ConfigurationError("A gold label passed to F1Measure contains an id >= {}, "
@@ -62,17 +65,14 @@ class LabeledF1Measure(Metric):
         mask = mask.float()
         gold_labels = gold_labels.float()
 
-        if gold_labels.size(-1) == 1:
-            gold_labels = gold_labels.squeeze(-1)
-        if mask.size(-1) == 1:
-            mask = mask.squeeze(-1)
         negative_label_mask = gold_labels.eq(self._negative_label).float()
         positive_label_mask = 1.0 - negative_label_mask
 
-        argmax_predictions = predictions.max(-1)[1].float().squeeze(-1)
+        assert predictions.dim() == gold_labels.dim()+1,(predictions.size(),gold_labels.size())
+        argmax_predictions = predictions.argmax(-1).float()
 
 
-        assert argmax_predictions.size() == negative_label_mask.size(),(argmax_predictions.size(),negative_label_mask.size())
+        assert argmax_predictions.size() == negative_label_mask.size(),(predictions.size(),gold_labels.size(),argmax_predictions.size(),negative_label_mask.size())
         assert argmax_predictions.size() == gold_labels.size(),(argmax_predictions.size(),gold_labels.size())
         assert negative_label_mask.size() == mask.size(),(negative_label_mask.size(),mask.size())
         # True Negatives: correct non-positive predictions.
@@ -129,7 +129,7 @@ class LabeledF1Measure(Metric):
 
 
         # (batch_size, length, 1) index to pred_candidates
-        predindex_argmax =  pred_probs.max(-1)[1].unsqueeze(-1)
+        predindex_argmax =  pred_probs.argmax(-1).unsqueeze(-1)
 
         # (batch_size, length) pred_id
 
@@ -206,6 +206,7 @@ class LabeledF1Measure(Metric):
         metrics["pre"] =  format(precision)
         metrics["re"] =   format(recall)
         metrics["f1"] =  format(f1_measure)
+        metrics["scores"] =  format(self.scores)
         return metrics
 
     def reset(self):
@@ -224,3 +225,5 @@ class LabeledF1Measure(Metric):
         self._pred_true_negatives = 0.0
         self._pred_false_positives = 0.0
         self._pred_false_negatives = 0.0
+
+        self.scores = 0.0

@@ -51,9 +51,11 @@ class MultiIndexField(Field[torch.Tensor]):
 
     def __init__(self,
                  labels: Sequence[int],
-                 label_namespace: str = 'indexes') -> None:
+                 label_namespace: str = 'indexes',
+                 padding_value:int = 0) -> None:
         self.labels = labels
         self._label_namespace = label_namespace
+        self._padding_value = padding_value
         self._label_ids = labels
         self._sequence_length = len(self.labels)
 
@@ -84,7 +86,7 @@ class MultiIndexField(Field[torch.Tensor]):
 
         num_indexes = padding_lengths[self._label_namespace+"num_indexes"]
 
-        tensor = torch.zeros(num_indexes).long()  # vector of zeros
+        tensor = torch.ones(num_indexes).long()*self._padding_value  # vector of zeros
         if self._label_ids:
             tensor.narrow(0, 0, len(self._label_ids)).copy_(torch.LongTensor(self._label_ids))
         return tensor

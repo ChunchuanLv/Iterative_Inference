@@ -77,7 +77,7 @@ def hard(y_soft,mask):
     mask = mask.float()
     while mask.dim() < y_soft.dim():
         mask = mask.unsqueeze(1)
-    _, k = y_soft.max(-1)
+    k = y_soft.argmax(-1)
     # this bit is based on
     # https://discuss.pytorch.org/t/stop-gradients-for-st-gumbel-softmax/530/5
 

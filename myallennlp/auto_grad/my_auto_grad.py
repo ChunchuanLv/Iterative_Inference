@@ -90,6 +90,8 @@ class ComputationGraph:
         self.G.add_node(node.output_name,data=node)
         for name in node.input_names:
             self.G.add_edge(name,node.output_name)
+        for name in node.extra_input_names:
+            self.G.add_edge(name,node.output_name)
 
 
     def forward(self, inputs: List[torch.Tensor],extra_inputs:List[torch.Tensor] = []):
@@ -127,7 +129,7 @@ class ComputationGraph:
         for node_name in execution_order:
 
             node = self.G.nodes[node_name]["data"]
-
+            if node_name not in total_grads_dict: continue
             grads_dict = node.backward(total_grads_dict[node_name])
             for name, grad in grads_dict.items():
                 if name in total_grads_dict:
