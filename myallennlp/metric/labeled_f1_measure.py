@@ -35,6 +35,8 @@ class LabeledF1Measure(Metric):
         self._pred_false_negatives = 0.0
 
         self.scores = 0.0
+        self.linear_scores = 0.0
+        self.score_size = 0.0
 
     def __call__(self,
                  predictions: torch.Tensor,
@@ -43,7 +45,8 @@ class LabeledF1Measure(Metric):
                  pred_probs: torch.Tensor,
                  pred_candidates: torch.Tensor,
                  gold_pred: torch.Tensor,
-                 scores:torch.Tensor):
+                 scores:torch.Tensor,
+                 linear_scores:torch.Tensor):
         """
         Parameters
         ----------
@@ -55,9 +58,11 @@ class LabeledF1Measure(Metric):
         mask: ``torch.Tensor``, optional (default = None).
             A masking tensor the same size as ``gold_labels``.
         """
-        predictions, gold_labels, mask, pred_probs,pred_candidates,gold_pred,scores = self.unwrap_to_tensors(predictions, gold_labels, mask,pred_probs,pred_candidates,gold_pred,scores)
+        predictions, gold_labels, mask, pred_probs,pred_candidates,gold_pred,scores,linear_scores = self.unwrap_to_tensors(predictions, gold_labels, mask,pred_probs,pred_candidates,gold_pred,scores,linear_scores)
 
-        self.scores += scores.mean().item()
+        self.score_size += max(scores.view(-1).size(0),linear_scores.view(-1).size(0))
+        self.scores += (scores*mask.unsqueeze(-1)).sum().item()
+        self.linear_scores += (linear_scores*mask.unsqueeze(-1)).sum().item()
         num_classes = predictions.size(-1)
         if (gold_labels >= num_classes).any():
             raise ConfigurationError("A gold label passed to F1Measure contains an id >= {}, "
@@ -202,11 +207,14 @@ class LabeledF1Measure(Metric):
         metrics["un_f1"] =   format(un_f1_measure)
         metrics["pred_f1"] =   format(pred_f1_measure)
         metrics["lab_f1"] =   format(label_f1_measure)
+        metrics["lab_pre"] =   format(label_precision)
+        metrics["lab_re"] =   format(label_recall)
 
         metrics["pre"] =  format(precision)
         metrics["re"] =   format(recall)
         metrics["f1"] =  format(f1_measure)
-        metrics["scores"] =  format(self.scores)
+        metrics["h_s"] =  format(self.scores/self.score_size)
+        metrics["l_s"] =  format(self.linear_scores/self.score_size)
         return metrics
 
     def reset(self):
@@ -227,3 +235,5 @@ class LabeledF1Measure(Metric):
         self._pred_false_negatives = 0.0
 
         self.scores = 0.0
+        self.linear_scores = 0.0
+        self.score_size = 0.0

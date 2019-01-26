@@ -187,8 +187,8 @@ class Conll2009DatasetReader(DatasetReader):
         with open(file_path) as sdp_file:
             for annotated_sentence, directed_arc_indices, arc_tags , predicates_indexes in lazy_parse(sdp_file.read()):
                 # If there are no arc indices, skip this instance.
-              #  if not directed_arc_indices and self.filter:
-               #     continue
+                if not directed_arc_indices and self.filter:
+                    continue
                 self.annotated_sentences.append(annotated_sentence)
                 tokens = [word["form"] for word in annotated_sentence]
                 pred_candidates, sense_indexes, predicates = self.data_for_sense_prediction(annotated_sentence,training)

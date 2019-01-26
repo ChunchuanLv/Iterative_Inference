@@ -74,7 +74,7 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
                  dropout: float = 0.3,
                  stright_through: bool = False,
                  denoise: bool = False,
-                 gradient_as_logits:bool=True,
+                 gradient_as_logits:bool=False,
                  global_gating:bool=False,
                  detach:bool = False,
                  gating:bool = False,
@@ -124,17 +124,20 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
 
     def one_iteration(self,
             predicate_representation,
-            sense_logits,
+            input_sense_logits,
             extra_representation,
-            arc_tag_logits,
+            input_arc_tag_logits,
             embedded_candidate_preds,
             graph_mask,
             sense_mask,
             predicate_mask,
             soft_tags,
             soft_index,
-            arc_tag_probs = None,
-            sense_probs = None):
+            arc_tag_probs,
+            sense_probs,
+              old_arc_tag_logits,
+              old_sense_logits ,
+              old_scores = None):
 
         def get_loss_grad(tag, logits,probs = None):
             if tag is not None and self.training and False:
@@ -143,32 +146,6 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
             else:
                 return 0
 
-        arc_tag_logits = arc_tag_logits  + get_loss_grad(soft_tags, arc_tag_logits,arc_tag_probs)
-
-        if self.denoise and (self.training or (self.gating and arc_tag_probs is not None))  :
-            arc_tag_logits = arc_tag_logits  + _sample_gumbel(arc_tag_logits.size(),  out=arc_tag_logits.new())
-            arc_tag_probs_soft = torch.nn.functional.softmax(arc_tag_logits , dim=-1)
-        else:
-            arc_tag_probs_soft = torch.nn.functional.softmax(arc_tag_logits , dim=-1)
-
-        arc_tag_probs = hard(arc_tag_probs_soft, graph_mask)  if self.stright_through else arc_tag_probs_soft
-
-        # (batch_size, predicates_len, max_senses )
-        sense_logits = sense_logits  + get_loss_grad(soft_index, sense_logits,sense_probs)
-
-        if self.denoise and self.training:
-            sense_logits = sense_logits  + _sample_gumbel(sense_logits.size(),out=sense_logits.new())
-
-            sense_probs_soft = torch.nn.functional.softmax(sense_logits  , dim=-1)
-        else:
-            sense_probs_soft = torch.nn.functional.softmax(sense_logits, dim=-1)
-
-
-    #    print ("sense_probs_soft",sense_probs_soft.size())
-    #    print ("sense_mask",sense_mask.size())
-        sense_probs = hard(sense_probs_soft, sense_mask) if self.stright_through else sense_probs_soft
-        # (batch_size, predicates_len, node_dim)
-
         predicate_emb = (sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(2) * predicate_mask.unsqueeze(-1) + predicate_representation
 
         scores, grad_to_predicate_emb, grad_to_arc_tag_probs = self.graph_scorer(predicate_emb,
@@ -176,27 +153,89 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
                                                                                  arc_tag_probs*graph_mask, graph_mask)
 
         grad_to_sense_probs = embedded_candidate_preds.matmul(grad_to_predicate_emb.unsqueeze(-1)).squeeze(-1)
-        return arc_tag_logits, arc_tag_probs_soft, sense_logits, sense_probs_soft,  scores, grad_to_sense_probs, grad_to_arc_tag_probs
 
-    def gold_feed(self, soft_tags,
-                      soft_index,
-                    predicate_representation,
-                        extra_node_representation,
-                      embedded_candidate_preds,
-                        graph_mask,
-                        sense_mask,
-        predicate_mask):
+
+        arc_tag_logits = input_arc_tag_logits + get_loss_grad(soft_tags, old_arc_tag_logits,arc_tag_probs) + grad_to_arc_tag_probs
+
+
+        # (batch_size, predicates_len, max_senses )
+        sense_logits = input_sense_logits  + get_loss_grad(soft_index, old_sense_logits,sense_probs) + grad_to_sense_probs
+
+        if self.denoise and self.training:
+            arc_tag_logits = arc_tag_logits  + _sample_gumbel(arc_tag_logits.size(),  out=arc_tag_logits.new())
+            sense_logits = sense_logits  + _sample_gumbel(sense_logits.size(),out=sense_logits.new())
+        #    scores = scores + (arc_tag_probs * input_arc_tag_logits).sum(-1, keepdim=True)/scores.size(-1)*graph_mask
+        if self.gating and not self.training and old_scores is not None:
+            if self.global_gating:
+                delta = (scores - old_scores).sum(3, keepdim=True).sum(2, keepdim=True)
+            else:
+                delta = (scores - old_scores).sum(-1, keepdim=True)
+            update_mask = (delta > 0).float()
+            old_mask = 1 - update_mask
+            arc_tag_logits = arc_tag_logits * update_mask + old_arc_tag_logits * old_mask
+
+            sense_update_mask = (delta.sum(1) > 0 ).float()
+            old_sense_mask = 1 - sense_update_mask
+            sense_logits = sense_logits * sense_update_mask + old_sense_logits * old_sense_mask
+
+
+        arc_tag_probs_soft = torch.nn.functional.softmax(arc_tag_logits , dim=-1)
+        arc_tag_probs_out = hard(arc_tag_probs_soft, graph_mask)  if self.stright_through else arc_tag_probs_soft
+
+
+        sense_probs_soft = torch.nn.functional.softmax(sense_logits, dim=-1)
+
+
+        sense_probs_out = hard(sense_probs_soft, sense_mask) if self.stright_through else sense_probs_soft
+
+
+
+        return arc_tag_logits, arc_tag_probs_out, sense_logits, sense_probs_out,  scores , grad_to_arc_tag_probs
+
+    def gold_feed(self,
+            predicate_representation,
+            input_sense_logits,
+            extra_representation,
+            input_arc_tag_logits,
+            embedded_candidate_preds,
+            graph_mask,
+            sense_mask,
+            predicate_mask,
+            soft_tags,
+            soft_index):
 
 
         # (batch_size, sequence_length, node_dim)
         predicate_emb = (soft_index.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
             2)* predicate_mask.unsqueeze(-1) + predicate_representation
         scores, grad_to_predicate_emb, grad_to_arc_tag_probs = self.graph_scorer(predicate_emb,
-                                                                                 extra_node_representation,
+                                                                                 extra_representation,
                                                                                  soft_tags*graph_mask, graph_mask)
 
         grad_to_sense_probs = embedded_candidate_preds.matmul(grad_to_predicate_emb.unsqueeze(-1)).squeeze(-1)
-        return scores, grad_to_sense_probs, grad_to_arc_tag_probs
+
+
+        arc_tag_logits = input_arc_tag_logits  + grad_to_arc_tag_probs
+
+
+        # (batch_size, predicates_len, max_senses )
+        sense_logits = input_sense_logits + grad_to_sense_probs
+
+    #    arc_tag_logits = input_arc_tag_logits  + grad_to_arc_tag_probs
+
+
+        # (batch_size, predicates_len, max_senses )
+     #   sense_logits = input_sense_logits + grad_to_sense_probs
+
+
+        arc_tag_probs_soft = torch.nn.functional.softmax(arc_tag_logits , dim=-1)
+
+
+        sense_probs_soft = torch.nn.functional.softmax(sense_logits, dim=-1)
+
+
+
+        return arc_tag_logits, arc_tag_probs_soft, sense_logits, sense_probs_soft,  scores , grad_to_arc_tag_probs
 
     @overrides
     def forward(self,predicate_representation,
@@ -206,7 +245,9 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
                                 embedded_candidate_preds,
                                 graph_mask,
                                 sense_mask,
-                predicate_mask,
+                                predicate_mask,
+                                arc_tag_probs,
+                                sense_probs,
                                 soft_tags=None,
                                 soft_index=None):  # pylint: disable=arguments-differ
         '''
@@ -226,44 +267,25 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
         # shape (batch_size, predicates_len, batch_max_senses )  sense_mask
 
 
-        arc_tag_logits, arc_tag_probs, sense_logits, sense_probs, scores, grad_to_sense_probs, grad_to_arc_tag_probs = self.one_iteration(
-            predicate_representation,
-            input_sense_logits,
-            extra_representation,
-            input_arc_tag_logits,
-            embedded_candidate_preds,
-            graph_mask,
-            sense_mask,
-            predicate_mask,
-            soft_tags,
-            soft_index,
-        )
-
-        scores = scores + (arc_tag_probs * input_arc_tag_logits).sum(-1, keepdim=True)/scores.size(-1)*graph_mask
-        arc_tag_logits_list = [arc_tag_logits]
+       # scores = scores + (arc_tag_probs * input_arc_tag_logits).sum(-1, keepdim=True)/scores.size(-1)*graph_mask
+        arc_tag_logits_list = [input_arc_tag_logits]
         arc_tag_probs_list = [arc_tag_probs]
-        sense_logits_list = [sense_logits]
+        sense_logits_list = [input_sense_logits]
         sense_probs_list = [sense_probs]
-        scores_list = [scores]
-        grad_to_arc_tag_probs_list = [grad_to_arc_tag_probs]
+        scores_list = []
+        old_arc_tag_logits = input_arc_tag_logits
+        old_sense_logits = input_sense_logits
+        old_scores = None
         iterations = self.iterations if self.training else self.testing_iterations
         #      arg_intermediates_list = []
-        if self.detach:
-            input_sense_logits = input_sense_logits.detach()
-            input_arc_tag_logits = input_arc_tag_logits.detach()
           #  predicate_representation = predicate_representation.detach()
         for i in range(iterations):
 
-            # (batch_size, sequence_length, max_senses )
-            sense_logits = self._dropout (input_sense_logits) + grad_to_sense_probs
-
-            arc_tag_logits = self._dropout (input_arc_tag_logits) + grad_to_arc_tag_probs
-
-            arc_tag_logits, arc_tag_probs, sense_logits, sense_probs,  scores, grad_to_sense_probs, grad_to_arc_tag_probs = self.one_iteration(
+            arc_tag_logits, arc_tag_probs, sense_logits, sense_probs, scores, grad_to_arc_tag_probs = self.one_iteration(
                 predicate_representation,
-                sense_logits,
+                input_sense_logits,
                 extra_representation,
-                arc_tag_logits,
+                input_arc_tag_logits,
                 embedded_candidate_preds,
                 graph_mask,
                 sense_mask,
@@ -271,29 +293,30 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
                 soft_tags,
                 soft_index,
                 arc_tag_probs,
-                sense_probs
+                sense_probs,
+                old_arc_tag_logits,
+                old_sense_logits,
+                old_scores
             )
-            scores = scores + (arc_tag_probs * input_arc_tag_logits).sum(-1, keepdim=True)/scores.size(-1)*graph_mask
-            if self.gating and not self.training:
-                if self.global_gating:
-                    update_mask = ((scores-scores_list[-1]).sum(3,keepdim=True).sum(2,keepdim=True)  > 0).float()
-                else:
-                    update_mask = ((scores-scores_list[-1]).sum(-1,keepdim=True) > 0).float()
-                old_mask = 1 - update_mask
-                grad_to_arc_tag_probs = grad_to_arc_tag_probs * update_mask + grad_to_arc_tag_probs_list[-1]* old_mask
-                arc_tag_probs = arc_tag_probs * update_mask + arc_tag_probs_list[-1]* old_mask
-                arc_tag_logits = arc_tag_logits * update_mask + arc_tag_logits_list[-1]* old_mask
+            old_arc_tag_logits = arc_tag_logits
+            old_sense_logits = sense_logits
+            old_scores = scores
+            if self.detach:
+                arc_tag_probs = arc_tag_probs.detach()
+                sense_probs = sense_probs.detach()
 
-            if self.gradient_as_logits:
-                arc_tag_logits_list.append(grad_to_arc_tag_probs)
-                sense_logits_list.append(grad_to_sense_probs)
-            else:
-                arc_tag_logits_list.append(arc_tag_logits)
-                sense_logits_list.append(sense_logits)
-            grad_to_arc_tag_probs_list.append(grad_to_arc_tag_probs)
+            arc_tag_logits_list.append(arc_tag_logits)
+            sense_logits_list.append(sense_logits)
             arc_tag_probs_list.append(arc_tag_probs)
             sense_probs_list.append(sense_probs)
             scores_list.append(scores)
+
+        arc_tag_logits_list = arc_tag_logits_list[:-1]
+        arc_tag_probs_list = arc_tag_probs_list[:-1]
+        sense_logits_list = sense_logits_list[:-1]
+        sense_probs_list = sense_probs_list[:-1]
+    #    scores_list = []
+      #  scores_list.append(torch.zeros_like(scores))
 
         c_arc_tag_logits_list = []
         c_arc_tag_probs_list = []
@@ -302,28 +325,18 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
         c_scores_list = []
 
         if soft_tags is not None :
+            gold_arc_tag_logits, gold_arc_tag_probs, gold_sense_logits, gold_sense_probs, gold_scores, grad_to_arc_tag_probs = self.gold_feed( predicate_representation,
+            input_sense_logits,
+            extra_representation,
+            input_arc_tag_logits,
+            embedded_candidate_preds,
+            graph_mask,
+            sense_mask,
+            predicate_mask,
+            soft_tags,
+            soft_index)
 
-
-            gold_scores, grad_to_sense_probs, grad_to_arc_tag_probs = self.gold_feed( soft_tags,
-                      soft_index,
-                    predicate_representation,
-                        extra_representation,
-                      embedded_candidate_preds,
-                        graph_mask,
-                        sense_mask,
-                                                                                      predicate_mask)
-
-            gold_scores = gold_scores + (soft_tags * input_arc_tag_logits).sum(-1, keepdim=True)/scores.size(-1)*graph_mask
-            gold_sense_logits = self._dropout (input_sense_logits)  + grad_to_sense_probs
-            gold_arc_tag_logits = self._dropout (input_arc_tag_logits)  + grad_to_arc_tag_probs
-
-            gold_arc_tag_probs = torch.nn.functional.softmax(gold_arc_tag_logits, dim=-1)
-            assert gold_arc_tag_probs.dim() == 4, gold_arc_tag_probs.size()
-            gold_sense_probs = torch.nn.functional.softmax(gold_sense_logits, dim=-1)
-            if self.gradient_as_logits:
-                gold_results = [gold_scores, grad_to_sense_probs , gold_sense_probs, grad_to_arc_tag_probs,gold_arc_tag_probs]
-            else:
-                gold_results = [gold_scores, gold_sense_logits , gold_sense_probs, gold_arc_tag_logits,gold_arc_tag_probs]
+            gold_results = [gold_scores, gold_sense_logits , gold_sense_probs, gold_arc_tag_logits,gold_arc_tag_probs]
         else:
             gold_results = [None,None,None,None,None]
 
@@ -331,38 +344,31 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
         iterations = self.corruption_iterations if self.training else 1
         if self.corruption_rate and soft_tags is not None and self.training:
             for i in range(iterations):
-                if self.corrupt_with_output:
-                    soft_tags = self.corrupt_one_hot(soft_tags,graph_mask)
-                    soft_index = self.corrupt_index(soft_index,sense_mask)
-                else:
+                if  self.corrupt_with_output:
                     soft_tags = self.corrupt_one_hot(soft_tags,graph_mask,arc_tag_probs_list[-1])
                     soft_index = self.corrupt_index(soft_index,sense_mask,sense_probs_list[-1])
-                gold_scores, grad_to_sense_probs, grad_to_arc_tag_probs = self.gold_feed( soft_tags,
-                          soft_index,
-                        predicate_representation,
-                            extra_representation,
-                          embedded_candidate_preds,
-                            graph_mask,
-                            sense_mask,
-                            predicate_mask)
-
-                gold_scores = gold_scores + (soft_tags * input_arc_tag_logits).sum(-1, keepdim=True)/gold_scores.size(-1)*graph_mask
-
-                gold_sense_logits = self._dropout (input_sense_logits)  + grad_to_sense_probs
-                gold_arc_tag_logits = self._dropout (input_arc_tag_logits)  + grad_to_arc_tag_probs
-
-                gold_arc_tag_probs = torch.nn.functional.softmax(gold_arc_tag_logits, dim=-1)
-
-                gold_sense_probs = torch.nn.functional.softmax(gold_sense_logits, dim=-1)
-
-                if self.gradient_as_logits:
-                    c_arc_tag_logits_list.append(grad_to_arc_tag_probs)
-                    c_sense_logits_list.append(grad_to_sense_probs)
                 else:
-                    c_arc_tag_logits_list.append(gold_arc_tag_logits)
-                    c_sense_logits_list.append(gold_sense_logits)
-                c_arc_tag_probs_list.append(gold_arc_tag_probs)
-                c_sense_probs_list.append(gold_sense_probs)
+                    soft_tags = self.corrupt_one_hot(soft_tags,graph_mask)
+                    soft_index = self.corrupt_index(soft_index,sense_mask)
+                gold_arc_tag_logits, gold_arc_tag_probs, gold_sense_logits, gold_sense_probs, gold_scores, grad_to_arc_tag_probs= self.gold_feed( predicate_representation,
+                    input_sense_logits,
+                    extra_representation,
+                    input_arc_tag_logits,
+                    embedded_candidate_preds,
+                    graph_mask,
+                    sense_mask,
+                    predicate_mask,
+                    soft_tags,
+                    soft_index)
+
+
+                if self.detach:
+                    gold_arc_tag_probs = gold_arc_tag_probs.detach()
+                    gold_sense_probs = gold_sense_probs.detach()
+                c_arc_tag_logits_list.append(gold_arc_tag_logits)
+                c_arc_tag_probs_list.append(soft_tags)
+                c_sense_logits_list.append(gold_sense_logits)
+                c_sense_probs_list.append(soft_index)
                 c_scores_list.append(gold_scores)
 
         return (arc_tag_logits_list, arc_tag_probs_list, sense_logits_list, sense_probs_list, scores_list ),\
@@ -371,11 +377,12 @@ class SRLScoreBasedRefiner(Seq2SeqEncoder):
 
     def corrupt_one_hot(self,gold,mask,sample = None):
         corrupt_mask = self._corrupt_mask(mask)
+        #  corrupt_mask =1
         if sample is None:
-            sample = torch.distributions.one_hot_categorical.OneHotCategorical(logits=torch.zeros_like(gold)).sample()
+            sample = mask *  torch.distributions.one_hot_categorical.OneHotCategorical(logits=torch.zeros_like(gold)).sample()
 
 
-        return mask * (gold*corrupt_mask+(1-corrupt_mask)*sample)
+        return (gold*corrupt_mask+(1-corrupt_mask)*sample)
 
     def corrupt_index(self,soft_index,sense_mask,sample = None):
         sense_mask = sense_mask +1e-6

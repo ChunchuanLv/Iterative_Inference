@@ -81,6 +81,19 @@ class GraphAutoEncoder(Seq2SeqEncoder):
 
         self._dropout_mask = lambda x : torch.bernoulli(x.data.new(x.data.size()).fill_(1 - self.dropout)) if self.training else 1
 
+        def tmp( grad, edge_rep,edges):
+            edges_mask = edges[:,:,:,0]
+
+            grad = grad.matmul(self._edge_embed.weight)
+
+            grad =  torch.cat([grad[:,:,:,0].unsqueeze(-1),grad[:,:,:,1:]*edges_mask.unsqueeze(-1)],dim=-1)
+            return grad
+
+        def tmp_f( edges):
+            edges_mask = edges[:,:,:,0].unsqueeze(-1)
+            edges = torch.cat([edges_mask,edges[:,:,:,1:]*edges_mask],dim=-1)
+            return self._edge_embed(edges)
+
     def get_input_dim(self):
         return self._input_dim
 
@@ -135,8 +148,13 @@ class GraphAutoEncoder(Seq2SeqEncoder):
 
 
         def tmp( grad, edge_rep,edges):
-            return grad.matmul(self._edge_embed.weight)
+
+            grad = grad.matmul(self._edge_embed.weight)
+         #   grad = torch.cat([torch.zeros_like(grad[:,:,:,0]).unsqueeze(-1),grad[:,:,:,1:]],dim=-1)
+            return grad
+
         def tmp_f( edges):
+      #      edges = torch.cat([torch.zeros_like(edges[:,:,:,0]).unsqueeze(-1),edges[:,:,:,1:]],dim=-1)
             return self._edge_embed(edges)
         # edge_rep (batch_size, timesteps, pre_len,node_dim)
         graph.add_node(ComputationNode("edge_rep",["edges"],tmp_f,tmp))

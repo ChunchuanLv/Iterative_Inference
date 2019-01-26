@@ -27,7 +27,8 @@ class IterativeLabeledF1Measure(Metric):
                  pred_probs: torch.Tensor,
                  pred_candidates: torch.Tensor,
                  gold_pred: torch.Tensor,
-                 scores:torch.Tensor = None,
+                 scores:torch.Tensor = torch.zeros(1),
+                 linear_scores:torch.Tensor = torch.zeros(1),
                  n_iteration:int=0):
         """
         Parameters
@@ -41,8 +42,7 @@ class IterativeLabeledF1Measure(Metric):
             A masking tensor the same size as ``gold_labels``.
         """
         labeled_f1 = self.labeled_f1_scores.setdefault(n_iteration,LabeledF1Measure(self._negative_label ,self._negative_pred))
-        if scores is None: scores  = torch.zeros(1)
-        labeled_f1(predictions,gold_labels,graph_mask,pred_probs,pred_candidates,gold_pred,scores)
+        labeled_f1(predictions,gold_labels,graph_mask,pred_probs,pred_candidates,gold_pred,scores,linear_scores)
 
     def get_metric(self, reset: bool = False,training=True):
         """
