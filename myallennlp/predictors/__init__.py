@@ -1,1 +1,2 @@
 from myallennlp.predictors.conll2009_predictor import Conll2009_Predictor
+from myallennlp.predictors.conll2009_predictor_base import Conll2009_PredictorBase

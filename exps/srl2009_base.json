@@ -1,0 +1,130 @@
+{
+  "dataset_reader": {
+    "type": "conll2009",
+    "data_folder": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/",
+    "token_indexers": {
+      "elmo": {
+        "type": "elmo_characters"
+      }
+    }
+  },
+  "train_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt",
+  "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt",
+  "test_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt",
+  "model": {
+    "type": "srl_graph_parser_base",
+    "text_field_embedder": {
+      "elmo": {
+        "type": "elmo_token_embedder",
+        "options_file": "/disk/scratch/s1544871/elmo/elmo_2x4096_512_2048cnn_2xhighway_options.json",
+        "weight_file": "/disk/scratch/s1544871/elmo/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5",
+        "dropout": 0
+      }
+      },
+    "delta_type":"kl_only",
+      "pos_tag_embedding": {
+        "embedding_dim": 64,
+        "vocab_namespace": "pos",
+        "sparse": true
+      },
+      "dep_tag_embedding": {
+        "embedding_dim": 64,
+        "vocab_namespace": "dep",
+        "sparse": true
+      },
+      "predicate_embedding": {
+        "embedding_dim": 128,
+        "vocab_namespace": "predicates",
+        "sparse": true
+      },
+      "encoder": {
+        "type": "stacked_bidirectional_lstm",
+        "input_size": 1152,
+        "hidden_size": 500,
+        "num_layers": 3,
+        "recurrent_dropout_probability": 0.3,
+        "use_highway": true
+      },
+      "arc_representation_dim":300,
+      "tag_representation_dim": 128,
+      "dropout": 0.3,
+      "input_dropout": 0.3,
+      "initializer": [
+        [
+          ".*feedforward.*weight",
+          {
+            "type": "xavier_uniform"
+          }
+        ],
+        [
+          ".*feedforward.*bias",
+          {
+            "type": "zero"
+          }
+        ],
+        [
+          ".*tag_bilinear.*weight",
+          {
+            "type": "xavier_uniform"
+          }
+        ],
+        [
+          ".*tag_bilinear.*bias",
+          {
+            "type": "zero"
+          }
+        ],
+        [
+          ".*weight_ih.*",
+          {
+            "type": "xavier_uniform"
+          }
+        ],
+        [
+          ".*weight_hh.*",
+          {
+            "type": "orthogonal"
+          }
+        ],
+        [
+          ".*bias_ih.*",
+          {
+            "type": "zero"
+          }
+        ],
+        [
+          ".*bias_hh.*",
+          {
+            "type": "lstm_hidden_bias"
+          }
+        ]
+      ]
+    },
+    "iterator": {
+      "type": "bucket",
+      "biggest_batch_first": true,
+      "sorting_keys": [
+        [
+          "tokens",
+          "num_tokens"
+        ]
+      ],
+      "batch_size": 128
+    },
+    "evaluate_on_test": true,
+    "trainer": {
+      "num_epochs": 600,
+      "grad_norm": 5.0,
+      "patience": 100,
+      "cuda_device":  2,
+      "validation_metric": "+F",
+      "optimizer": {
+        "type": "dense_sparse_adam",
+        "weight_decay":1e-6,
+        "betas": [
+          0.9,
+          0.9
+        ]
+      }
+    }
+  }

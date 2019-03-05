@@ -19,7 +19,6 @@ class IterativeLabeledF1Measure(Metric):
         self._negative_pred = negative_pred
         self.labeled_f1_scores = {}
         self.selected_metrics = selected_metrics
-
     def __call__(self,
                  predictions: torch.Tensor,
                  gold_labels: torch.Tensor,
@@ -55,10 +54,21 @@ class IterativeLabeledF1Measure(Metric):
         """
         all_metrics = {}
    #     all_metrics["cool_down"] = self.cool_down/self._total_sentences
-        sorted_scores = sorted(self.labeled_f1_scores)
-        if training and False:
-            sorted_scores = [sorted_scores[0]] if len(sorted_scores) > 1 else []
+
+        if training:
+            sorted_scores = []
+
+            if -1 in self.labeled_f1_scores:
+                sorted_scores.append(-1)
+
+            if 0 in self.labeled_f1_scores:
+                sorted_scores.append(0)
+
+            if 1 in  self.labeled_f1_scores:
+                sorted_scores.append(1)
+
         else:
+            sorted_scores = sorted(self.labeled_f1_scores)
             sorted_scores = sorted_scores[:-1]
 
         for iterations in sorted_scores:

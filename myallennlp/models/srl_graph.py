@@ -11,6 +11,7 @@ import gc
 from allennlp.common.checks import check_dimensions_match, ConfigurationError
 from allennlp.data import Vocabulary
 from allennlp.modules import Seq2SeqEncoder, TextFieldEmbedder, Embedding, InputVariationalDropout
+from allennlp.modules.seq2seq_encoders import PassThroughEncoder
 from allennlp.modules.matrix_attention.bilinear_matrix_attention import BilinearMatrixAttention
 from allennlp.modules import FeedForward
 from allennlp.models.model import Model
@@ -21,6 +22,7 @@ from myallennlp.metric import IterativeLabeledF1Measure
 from myallennlp.modules.refiner.srl_score_based_refiner import SRLScoreBasedRefiner
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
+from itertools import chain
 
 from allennlp.nn.util import masked_softmax, weighted_sum
 
@@ -148,7 +150,7 @@ class SRLGraphParser(Model):
      #   check_dimensions_match(representation_dim, encoder.get_input_dim(), "text field embedding dim", "encoder input dim")
 
         self._labelled_f1 = IterativeLabeledF1Measure(negative_label=0, negative_pred=0,
-                                                      selected_metrics=["f1", "lab_pre","lab_re", "lab_f1","h_s","l_s"])
+                                                      selected_metrics=["F", "l_F","p_F","h_S"])
         self._tag_loss = torch.nn.NLLLoss(reduction="none")  # ,ignore_index=-1
         self._sense_loss = torch.nn.NLLLoss(reduction="none")  # ,ignore_index=-1
         initializer(self)
@@ -191,6 +193,10 @@ class SRLGraphParser(Model):
         An output dictionary.
         """
       #  torch.cuda.empty_cache()
+
+     #   if self.refine_epoch > -1 and epoch is not None and epoch >  self.refine_epoch:
+     #       self.freeze_initial()
+
         arc_tags = arc_tags.long()
         embedded_text_input = self.text_field_embedder(tokens)
 
@@ -215,11 +221,14 @@ class SRLGraphParser(Model):
 
         float_mask = mask.float()
 
-        predicate_mask = (predicate_indexes != -1).float()
+        predicate_mask = (predicate_indexes > -1).float()
         graph_mask = predicate_mask.unsqueeze(-1).unsqueeze(1)* float_mask.unsqueeze(-1).unsqueeze(2)
 
         # shape (batch_size, sequence_length, hidden_dim)
-        encoded_text = self._dropout(self.encoder(embedded_text_input, mask))
+        if isinstance(self.encoder,FeedForward):
+            encoded_text = self._dropout(self.encoder(embedded_text_input))
+        else:
+            encoded_text = self._dropout(self.encoder(embedded_text_input, mask))
 
         extra_representation = self._dropout(self.extra_feedforward(encoded_text))
 
@@ -275,12 +284,10 @@ class SRLGraphParser(Model):
         arc_tag_logits = arc_tag_logits.permute(0, 2, 3, 1)
         input_arc_tag_logits = torch.cat([arc_logits, arc_tag_logits], dim=-1).contiguous()
 
-        if self.training:
-            sense_logits = sense_logits  + _sample_gumbel(sense_logits.size(),out=sense_logits.new())
-            input_arc_tag_logits = input_arc_tag_logits  + _sample_gumbel(input_arc_tag_logits.size(),out=sense_logits.new())
         output_dict = {
             "tokens": [meta["tokens"] for meta in metadata],
         }
+
 
 
         soft_tags = torch.zeros(size=input_arc_tag_logits.size(), device=input_arc_tag_logits.device)
@@ -290,7 +297,6 @@ class SRLGraphParser(Model):
     #    print ("sense_indexes",sense_indexes.size(),sense_indexes)
         soft_index = torch.zeros(size=sense_logits.size(), device=sense_logits.device)
         soft_index.scatter_(2, sense_indexes.unsqueeze(2), 1) * sense_mask
-        arc_tag_probs, sense_probs = self._greedy_decode(input_arc_tag_logits, sense_logits)
 
 
         output_dict["loss"] =  0
@@ -306,7 +312,7 @@ class SRLGraphParser(Model):
                                                embedded_candidate_preds,
                                                graph_mask,
                                                sense_mask,
-                                               predicate_mask,arc_tag_probs, sense_probs,
+                                               predicate_mask,
                                                soft_tags,
                                                soft_index)
             gold_scores, gold_sense_logits, gold_sense_probs, gold_arc_tag_logits, gold_arc_tag_probs = gold_results
@@ -325,8 +331,10 @@ class SRLGraphParser(Model):
                                                             sense_mask,
                                                             predicate_mask,
                                                             is_gold=True)
-                self._labelled_f1(gold_arc_tag_probs, arc_tags + 1,  graph_mask.squeeze(-1), gold_sense_probs, predicate_candidates,
-                                  predicates, gold_scores, soft_tags*input_arc_tag_logits,n_iteration= 0)
+            output_dict["arc_tag_probs_g"] = gold_arc_tag_probs
+            output_dict["sense_probs_g"] = gold_sense_probs
+            self._labelled_f1(gold_arc_tag_probs, arc_tags + 1,  graph_mask.squeeze(-1), gold_sense_probs, predicate_candidates,
+                              predicates, gold_scores, soft_tags*input_arc_tag_logits,n_iteration= 0)
             for i, (arc_tag_logits, arc_tag_probs, sense_logits, sense_probs, scores) \
                     in enumerate(zip(*c_lists)):
                 if arc_tags is not None:
@@ -382,6 +390,8 @@ class SRLGraphParser(Model):
 
         else:
 
+            arc_tag_probs, sense_probs = self._greedy_decode(input_arc_tag_logits, sense_logits)
+
             loss = self._construct_loss(input_arc_tag_logits,
                                         arc_tag_probs,
                                         arc_tags,
@@ -400,6 +410,8 @@ class SRLGraphParser(Model):
 
         # output_dict["additional"] = d
         #  print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$forward added additional$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+        output_dict["predicate_mask"] = predicate_mask
+        output_dict["sense_mask"] = sense_mask
 
         return output_dict
 
@@ -413,6 +425,11 @@ class SRLGraphParser(Model):
 
 
                 output_dict["sense_argmax"+str(i) ] = output_dict["sense_probs"+str(i) ].argmax(-1)
+        if "arc_tag_probs_g" in output_dict:
+            output_dict["predicted_arc_tags_g" ] = output_dict["arc_tag_probs_g" ].argmax(-1)- 1
+
+
+            output_dict["sense_argmax_g"] = output_dict["sense_probs_g" ].argmax(-1)
 
         return output_dict
 
@@ -435,17 +452,9 @@ class SRLGraphParser(Model):
 
         valid_positions = graph_mask.sum().float()
 
-        # shape (batch ,predicate_length ,1)
-      #  delta_tag = self._tag_loss((arc_tag_probs+1e-6).log().permute(0, 3, 1, 2), arc_tags + 1).unsqueeze(-1)
 
 
-        if self.train_score and not is_gold and not is_corrupt and gold_scores is not None and scores is not None:
-            if False:
-                print ("soft_tags",soft_tags.size())
-                print ("arc_tag_probs",arc_tag_probs.size())
-                print ("arc_tag_logits",arc_tag_logits.size())
-                print ("delta_tag",delta_tag.size())
-                print ("graph_mask",graph_mask.size())
+        if not is_gold and  gold_scores is not None and scores is not None:
 
             delta_sense = self._sense_loss(torch.nn.functional.log_softmax(sense_logits, dim=-1).permute(0, 2, 1),sense_indexes).unsqueeze(-1)
             #    delta_sense = self._sense_loss((sense_probs+1e-6).log().permute(0, 2, 1), sense_indexes).unsqueeze(-1)
@@ -459,24 +468,13 @@ class SRLGraphParser(Model):
 
             sense_nll = torch.clamp(((-soft_index + sense_probs) * sense_logits + delta_sense) * sense_mask,
                                     min=0).sum() / valid_positions
-            score_nll = torch.clamp(((-gold_scores + scores) + delta_tag + delta_sense.sum(-1,keepdim=True).unsqueeze(1)) * graph_mask,
-                                    min=0).sum() / valid_positions
-
-            return sense_nll + tag_nll + self.train_score * score_nll
-        elif is_gold:
-
-            delta_sense = self._sense_loss((sense_probs + 1e-6).log().permute(0, 2, 1), sense_indexes).unsqueeze(-1)
-
-            # shape (batch ,sequence_length,sequence_length ,1)
-            delta_tag = self._tag_loss((arc_tag_probs + 1e-6).log().permute(0, 3, 1, 2), arc_tags + 1).unsqueeze(-1)
-
-            tag_nll = torch.clamp(((-soft_tags + arc_tag_probs) * arc_tag_logits + delta_tag) * graph_mask,
-                                  min=0).sum() / valid_positions
-
-            sense_nll = torch.clamp(((-soft_index + sense_probs) * sense_logits + delta_sense) * sense_mask,
-                                    min=0).sum() / valid_positions
-            return tag_nll + sense_nll  # + arc_nll
-        else:
+            nll =  sense_nll + tag_nll
+            if self.train_score:
+                score_nll = torch.clamp(((-gold_scores + scores) + delta_tag + delta_sense.sum(-1,keepdim=True).unsqueeze(1)) * graph_mask,
+                                        min=0).sum() / valid_positions
+                nll = nll + self.train_score * score_nll
+            return nll
+        else :
 
             delta_sense = self._sense_loss(torch.nn.functional.log_softmax(sense_logits, dim=-1).permute(0, 2, 1),sense_indexes).unsqueeze(-1)
             #    delta_sense = self._sense_loss((sense_probs+1e-6).log().permute(0, 2, 1), sense_indexes).unsqueeze(-1)
@@ -484,10 +482,12 @@ class SRLGraphParser(Model):
             # shape (batch ,sequence_length,sequence_length ,1)
             delta_tag = self._tag_loss(torch.nn.functional.log_softmax(arc_tag_logits, dim=-1).permute(0, 3, 1, 2), arc_tags + 1).unsqueeze(-1)
 
+            tag_nll = torch.clamp(((-soft_tags + arc_tag_probs) * arc_tag_logits + delta_tag) * graph_mask,
+                                  min=0).sum() / valid_positions
 
-            score_nll = torch.clamp(((-gold_scores + scores) + delta_tag + delta_sense.sum(-1,keepdim=True).unsqueeze(1)) * graph_mask,
+            sense_nll = torch.clamp(((-soft_index + sense_probs) * sense_logits + delta_sense) * sense_mask,
                                     min=0).sum() / valid_positions
-            return score_nll
+            return tag_nll + sense_nll
 
     def _construct_loss(self, arc_tag_logits,
                          arc_tag_probs,

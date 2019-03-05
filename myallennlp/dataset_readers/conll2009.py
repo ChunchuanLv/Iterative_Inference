@@ -146,6 +146,8 @@ class Conll2009DatasetReader(DatasetReader):
         self.filter = filter
         self.data_folder = data_folder
         self.lemma_to_sensed = self.read_frames(data_folder,read_frame_new)
+        self.read_frame_new = read_frame_new
+        print ("total number of lemma to senses:", len(self.lemma_to_sensed))
         self.annotated_sentences = []
 
     def save_frames(self,data_folder = None):
@@ -161,8 +163,11 @@ class Conll2009DatasetReader(DatasetReader):
     def read_frames(self,data_folder,read_frame_new):
         if os.path.exists(data_folder+'/senses.json') and not read_frame_new:
             with open(data_folder+'/senses.json') as infile:
+
+                print ("load saved senses dict")
                 return defaultdict(lambda: [], **json.load(infile))
 
+        print ("build senses dict")
         nbbank = PropbankReader(data_folder+"/nb_frames").get_frames()
         pbbank = PropbankReader(data_folder+"/pb_frames").get_frames()
 
@@ -187,7 +192,7 @@ class Conll2009DatasetReader(DatasetReader):
         with open(file_path) as sdp_file:
             for annotated_sentence, directed_arc_indices, arc_tags , predicates_indexes in lazy_parse(sdp_file.read()):
                 # If there are no arc indices, skip this instance.
-                if not directed_arc_indices and self.filter:
+                if not directed_arc_indices and self.filter and "train" in file_path  :
                     continue
                 self.annotated_sentences.append(annotated_sentence)
                 tokens = [word["form"] for word in annotated_sentence]
@@ -205,20 +210,17 @@ class Conll2009DatasetReader(DatasetReader):
             if word["fillpred"] == "Y":
                 pred = word["pred"]
                 lemma = word["plemma"]
-                if lemma in self.lemma_to_sensed and pred  in self.lemma_to_sensed[lemma] :
+                if training and lemma in self.lemma_to_sensed and pred  in self.lemma_to_sensed[lemma] :
                     sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
                     pred_candidates.append(self.lemma_to_sensed[lemma] )
-                elif training:
+                elif training and self.read_frame_new:
         #            print ("train adding",lemma,self.lemma_to_sensed[lemma] + [pred])
                     self.lemma_to_sensed[lemma].append(pred)
                     sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
                     pred_candidates.append(self.lemma_to_sensed[lemma] )
                 else:
-                    similar_lemma = difflib.get_close_matches(lemma, self.lemma_to_sensed.keys(),n=1,cutoff=0.9) # could be it self
-                    if similar_lemma and  similar_lemma[0] in self.lemma_to_sensed:
-                        similar_lemma = similar_lemma[0]
-                #        print ("lemma,similar_lemma,self.lemma_to_sensed[similar_lemma], pred",lemma,similar_lemma,self.lemma_to_sensed[similar_lemma],pred)
-                        pred_candidates.append(self.lemma_to_sensed[similar_lemma] )
+                    if  lemma in self.lemma_to_sensed:
+                        pred_candidates.append(self.lemma_to_sensed[lemma] )
                         sense_indexes.append(0)
                     else:
                  #       print ("test empty nothing similar",lemma,pred)
@@ -264,14 +266,26 @@ class Conll2009DatasetReader(DatasetReader):
 
 def main():
     data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English"
-   # reader = Conll2009DatasetReader(data_folder = data_folder)
+    with open(data_folder+'/senses.json') as infile:
 
-   # train_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt")
-   # dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt")
+        print ("load saved senses dict")
+        senses =  defaultdict(lambda: [], **json.load(infile))
 
-   # reader.save_frames()
+        i = 0
+        for predicates in senses.values():
+            i = i + len(predicates)
+        print ("len",len(senses))
+        print ("predicates",i)
+        print ("predicates/lemma",i*1.0/len(senses))
+    return
+    reader = Conll2009DatasetReader(data_folder = data_folder,read_frame_new=True)
 
-    reader = Conll2009DatasetReader(data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English")
+    train_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt")
+    dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt")
+
+    reader.save_frames()
+
+    reader = Conll2009DatasetReader(data_folder = data_folder)
 
 
     dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt")

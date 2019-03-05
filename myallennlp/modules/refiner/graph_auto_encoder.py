@@ -51,7 +51,7 @@ class GraphAutoEncoder(Seq2SeqEncoder):
                  edge_dim: int,
                  hidden_dim: int,
                  score_dim: int,
-                 detach:bool=True,
+                 full_back:bool=False,
                  dropout: float = 0.3) -> None:
         super(GraphAutoEncoder, self).__init__()
         self.dropout = dropout
@@ -59,40 +59,30 @@ class GraphAutoEncoder(Seq2SeqEncoder):
         self._input_node_dim  = input_node_dim
         self._node_dim  = node_dim
         self._edge_dim  = edge_dim
+        self._score_dim  = score_dim
+        self.full_back = full_back
         self._hidden_dim = hidden_dim
         self._edge_embed = Linear(edge_dim, node_dim)
+
+        self._negative_edge_embed = Linear(edge_dim - 1, node_dim)
 
         self._node_embed = Linear(input_node_dim, node_dim)
         self.h = nn.functional.softplus
 
         self.sigmoid = nn.functional.sigmoid
 
-        self._edge_mix = Linear(node_dim,
-                                hidden_dim)
+        self._edge_mix= Linear(node_dim,
+                                score_dim)
 
-        self._message_combine = Linear(hidden_dim, score_dim)
+     #   self._message_combine = Linear(hidden_dim, score_dim)
 
-        self._detach = detach
         self._edge_embed_to_score_m = Linear(node_dim, score_dim)
 
 
-        self._pred_mess = Linear(hidden_dim, hidden_dim)
-        self._arg_mess = Linear(hidden_dim, hidden_dim)
+    #    self._pred_mess = Linear(hidden_dim, hidden_dim)
+   #     self._arg_mess = Linear(hidden_dim, hidden_dim)
 
         self._dropout_mask = lambda x : torch.bernoulli(x.data.new(x.data.size()).fill_(1 - self.dropout)) if self.training else 1
-
-        def tmp( grad, edge_rep,edges):
-            edges_mask = edges[:,:,:,0]
-
-            grad = grad.matmul(self._edge_embed.weight)
-
-            grad =  torch.cat([grad[:,:,:,0].unsqueeze(-1),grad[:,:,:,1:]*edges_mask.unsqueeze(-1)],dim=-1)
-            return grad
-
-        def tmp_f( edges):
-            edges_mask = edges[:,:,:,0].unsqueeze(-1)
-            edges = torch.cat([edges_mask,edges[:,:,:,1:]*edges_mask],dim=-1)
-            return self._edge_embed(edges)
 
     def get_input_dim(self):
         return self._input_dim
@@ -134,9 +124,6 @@ class GraphAutoEncoder(Seq2SeqEncoder):
                 return [out*out_mask,out_mask,linear]
 
             return lambda x: inner_wrap(f,x)
-
-
-
         graph = ComputationGraph("linear_score",["input_nodes","edges"],["extra_nodes"])
 
         # A tensor of shape (batch_size, timesteps, pre_len ,hidden_dim)
@@ -156,55 +143,61 @@ class GraphAutoEncoder(Seq2SeqEncoder):
         def tmp_f( edges):
       #      edges = torch.cat([torch.zeros_like(edges[:,:,:,0]).unsqueeze(-1),edges[:,:,:,1:]],dim=-1)
             return self._edge_embed(edges)
+
+
+        def negative(edges):
+
+            all_edges = (edges* graph_mask).sum(1,keepdim=True)
+
+            negative_edges = (all_edges - edges )* graph_mask
+            negative_edges = negative_edges[:,:,:,1:]
+            if not self.full_back:
+                negative_edges = negative_edges.detach()
+            out , out_mask, linear =  wrap_with_dropout(self._negative_edge_embed) (negative_edges)
+
+         #   print ("out",out.size())
+         #   print ("graph_mask",graph_mask.size())
+            return [out,out_mask,linear]
+
+
+        def negative_back(grad,negative_rep,out_mask,linear,edges):
+            if not self.full_back:
+                return [torch.zeros_like(edges)]
+            else:
+                grad = (grad*out_mask* self.sigmoid(linear) ).matmul(self._negative_edge_embed.weight)
+                grad = torch.cat([torch.zeros_like(grad[:, :, :, 0]).unsqueeze(-1), grad], dim=-1)
+                grad = grad * graph_mask
+                grad = (grad.sum(1,keepdim=True) - grad )* graph_mask#-grad
+                return [grad]
+
+
         # edge_rep (batch_size, timesteps, pre_len,node_dim)
         graph.add_node(ComputationNode("edge_rep",["edges"],tmp_f,tmp))
 
-        def edge_node_back(grad, edge_node_rep,edge_rep,nodes,extra_nodes):
+     #   # edge_rep (batch_size, timesteps, pre_len,node_dim)
+        graph.add_node(ComputationNode("negative_edge",["edges"],negative,negative_back))
+
+        def edge_node_back(grad, edge_node_rep,negative_edge,nodes,extra_nodes):
             masked_grad = grad*graph_mask
-            return  [masked_grad ,masked_grad.sum(1) ]
+            return  [ masked_grad, masked_grad.sum(1) ]
+
 
         # edge_node_rep (batch_size, timesteps, pre_len,node_dim)
-        graph.add_node(ComputationNode("edge_node_rep",["edge_rep","nodes"],
-                                       lambda edge_rep,nodes,extra_nodes: (edge_rep + nodes.unsqueeze(1) +  extra_nodes.unsqueeze(2))*graph_mask,
+        graph.add_node(ComputationNode("edge_node_rep",["negative_edge","nodes"],
+                                       lambda negative_edge,nodes,extra_nodes: ( negative_edge + nodes.unsqueeze(1) +  extra_nodes.unsqueeze(2))*graph_mask,
                                        edge_node_back,extra_input_names=["extra_nodes"]))
 
 
         # A tensor of shape (batch_size, timesteps, pre_len ,hidden_dim)
         graph.add_node(ComputationNode("edge_mix",["edge_node_rep"],
                                        wrap_with_dropout(self._edge_mix),
-                                       lambda grad,edge_mix, out_mask,linear,edge_node_rep: [(grad*out_mask* self.sigmoid(linear) ).matmul(self._edge_mix.weight) ]))
+                                       lambda grad,edge_mix_hidden, out_mask,linear,edge_node_rep: [(grad *graph_mask *out_mask* self.sigmoid(linear) ).matmul(self._edge_mix.weight) ]))
 
 
-        # A tensor of shape (batch_size , timesteps , 1,hidden_dim)
-        graph.add_node(ComputationNode("arg_message",["edge_mix"],
-                                       wrap_with_dropout(lambda x: self._arg_mess(x.sum(2,keepdim=True))),
-                                       lambda grad,arg_message, out_mask, linear,edge_mix: [((grad*out_mask*self.sigmoid(linear)).matmul(self._arg_mess.weight)).expand_as(edge_mix) ]))
-
-
-        # A tensor of shape (batch_size, 1, pre_len,hidden_dim)
-        graph.add_node(ComputationNode("pred_message",["edge_mix"],
-                                       wrap_with_dropout(lambda x: self._pred_mess(x.sum(1,keepdim=True))),
-                                       lambda grad,_pred_mess, out_mask, linear,edge_mix: [((grad*out_mask*self.sigmoid(linear)).matmul(self._pred_mess.weight)).expand_as(edge_mix) ]))
-
-
-
-        # A tensor of shape (batch_size,  timesteps, pre_len, hidden_dim)
-        graph.add_node(ComputationNode("linear_combined_message",["arg_message","pred_message","edge_mix"],
-                                       lambda arg_message,pred_message,edge_mix: arg_message+pred_message + edge_mix,
-                                       lambda grad,linear_combined_message, arg_message,pred_message,edge_mix: [grad.sum(2,keepdim=True),grad.sum(1,keepdim=True), grad ]))
-
-
-
-        # A tensor of shape (batch_size, timesteps, timesteps,score_dim)
-        graph.add_node(ComputationNode("combined_message",["linear_combined_message"],
-                                       wrap_with_dropout(self._message_combine),
-                                       lambda grad, combined_message,out_mask,linear,linear_combined_message: (grad*out_mask*self.sigmoid(linear)).matmul(self._message_combine.weight)))
-
-
-        # A tensor of shape (batch_size, timesteps, timesteps,score_dim)
-        graph.add_node(ComputationNode("linear_score",["combined_message","edge_rep"],
-                                       lambda combined_message,edge_rep: combined_message + self._edge_embed_to_score_m(edge_rep),
-                                       lambda grad,linear_score, combined_message,edge_rep: [grad,grad.matmul(self._edge_embed_to_score_m.weight) ]))
+        # A tensor of shape (batch_size, timesteps, timesteps,score_dim )
+        graph.add_node(ComputationNode("linear_score",["edge_mix","edge_rep"],
+                                       lambda edge_mix,edge_rep: edge_mix + self._edge_embed_to_score_m(edge_rep),
+                                       lambda grad,linear_score, edge_mix,edge_rep: [grad*graph_mask,grad.matmul(self._edge_embed_to_score_m.weight) *graph_mask]))
 
     #    print ("graph order",graph.get_backward_order())
 
@@ -223,7 +216,7 @@ class GraphAutoEncoder(Seq2SeqEncoder):
 
         linear_score = graph.get_tensor_by_name("linear_score")
 
-        return self._dropout(self.sigmoid(linear_score))*graph_mask
+        return self.sigmoid(linear_score)*graph_mask * self._dropout_mask(linear_score)
 
     def get_score_and_graph(self,
                 nodes: torch.Tensor,
@@ -285,20 +278,27 @@ def main():
     :return:
     '''
     node_dim = 2
+    input_node_dim = 2
     edge_dim = 3
     hidden_dim = 15
     score_dim = 10
 
     batch_size = 2
     graph_size = 3
-    mlpfbb = GraphAutoEncoder(node_dim,edge_dim,hidden_dim,score_dim)
-
+    mlpfbb = GraphAutoEncoder(input_node_dim,node_dim,edge_dim,hidden_dim,score_dim)
+ #   mlpfbb.eval()
     nodes = torch.rand(batch_size,graph_size,node_dim,requires_grad=True)
     extra_nodes = torch.rand(batch_size,graph_size*2,node_dim)
     edges = torch.rand(batch_size,graph_size*2,graph_size,edge_dim,requires_grad=True)
 
-    graph_mask =  torch.rand(size=edges.size()[:-1]).unsqueeze(-1)
 
+    sizes = [[6,3],[4,2]]
+    graph_mask =  torch.zeros(size=edges.size()[:-1])
+
+    for i , [s0,s1] in enumerate(sizes):
+        data_t = torch.ones(s0,s1)
+        graph_mask[i].narrow(0, 0, s0).narrow(1, 0, s1).copy_(data_t)
+    graph_mask = graph_mask.unsqueeze(-1)
     graph = None
 
     score, grad_to_nodes, grad_to_edges = mlpfbb(nodes,extra_nodes,edges,graph_mask)

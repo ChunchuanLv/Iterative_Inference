@@ -14,17 +14,25 @@ from allennlp.common.util import import_submodules
 FIELDS_2009 = ["id", "form", "lemma", "plemma", "pos", "ppos", "feat", "pfeat", "head", "phead", "deprel", "pdeprel", "fillpred"]#, "pred"]
 
 @Predictor.register("dependency_srl")
-class Conll2009_Predictor(Predictor):
-    def __init__(self, model: Model, dataset_reader: DatasetReader, conll_format_file_path: str = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.predict") -> None:
+class Conll2009_Predictor(Predictor): #CoNLL2009-ST-evaluation-English  CoNLL2009-ST-English-development
+    def __init__(self, model: Model, dataset_reader: DatasetReader,
+                 output_file_path= None) -> None:
         super().__init__(model, dataset_reader)
         self.result = []
         self.crt_instance_id_start = 0
         #print(self._dataset_reader.type)
-        self.conll_format_file_path = conll_format_file_path
 
+        if output_file_path is not None:
+            self.set_files(output_file_path)
+
+    def set_files(self,output_file_path=
+                 "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.predict"):
+
+        self.conll_format_file_path = output_file_path
+
+        self.file_out_g = open(self.conll_format_file_path +"_g", 'w+')
+        self.file_out_t= open(self.conll_format_file_path, 'w+')
         self.file_out = []
-      #  for i in range(10):
-      #      self.file_out.append(open(self.conll_format_file_path+str(i), 'w+'))
 
 
     def to_conll_format(self, instance, annotated_sentence, output):
@@ -38,6 +46,46 @@ class Conll2009_Predictor(Predictor):
 
         max_num_slots = len(pred_candidates)
         predicates = ["_"] * sentence_len
+
+        if "sense_argmax_g" in output:
+            sense_argmax = output["sense_argmax_g"]
+            predicted_arc_tags = output["predicted_arc_tags_g"]
+
+            for sense_idx, idx, pred_candidate in zip(sense_argmax, predicate_indexes, pred_candidates):
+                if pred_candidate[sense_idx] not in EXCEPT_LIST:
+                    predicates[idx] = pred_candidate[sense_idx]
+            for idx in range(sentence_len):
+                word = annotated_sentence[idx]
+                arg_slots = ['_'] * max_num_slots
+                for y in range(max_num_slots):  # output["arc_tags"].shape[1]):
+                    if predicted_arc_tags[idx][y] != -1:
+                        arg_slots[y] = self._model.vocab.get_index_to_token_vocabulary("tags")[
+                            predicted_arc_tags[idx][y]]
+
+                pred_label = predicates[idx]
+                string = '\t'.join([word[type] for type in FIELDS_2009] + [pred_label] + arg_slots)
+                self.file_out_g.write(string + '\n')
+            self.file_out_g.write('\n')
+
+        if "sense_argmax" in output:
+            sense_argmax = output["sense_argmax"]
+            predicted_arc_tags = output["predicted_arc_tags"]
+
+            for sense_idx, idx, pred_candidate in zip(sense_argmax, predicate_indexes, pred_candidates):
+                if pred_candidate[sense_idx] not in EXCEPT_LIST:
+                    predicates[idx] = pred_candidate[sense_idx]
+            for idx in range(sentence_len):
+                word = annotated_sentence[idx]
+                arg_slots = ['_'] * max_num_slots
+                for y in range(max_num_slots):  # output["arc_tags"].shape[1]):
+                    if predicted_arc_tags[idx][y] != -1:
+                        arg_slots[y] = self._model.vocab.get_index_to_token_vocabulary("tags")[
+                            predicted_arc_tags[idx][y]]
+
+                pred_label = predicates[idx]
+                string = '\t'.join([word[type] for type in FIELDS_2009] + [pred_label] + arg_slots)
+                self.file_out_t.write(string + '\n')
+            self.file_out_t.write('\n')
 
         for i in range(10):
             if "sense_argmax"+str(i) in output:

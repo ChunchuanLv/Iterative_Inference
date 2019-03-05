@@ -60,8 +60,8 @@ class LabeledF1Measure(Metric):
         """
         predictions, gold_labels, mask, pred_probs,pred_candidates,gold_pred,scores,linear_scores = self.unwrap_to_tensors(predictions, gold_labels, mask,pred_probs,pred_candidates,gold_pred,scores,linear_scores)
 
-        self.score_size += max(scores.view(-1).size(0),linear_scores.view(-1).size(0))
-        self.scores += (scores*mask.unsqueeze(-1)).sum().item()
+        self.score_size += linear_scores.view(-1).size(0)
+        self.scores += (scores*mask.unsqueeze(-1)).sum().item() if scores is not None else 0
         self.linear_scores += (linear_scores*mask.unsqueeze(-1)).sum().item()
         num_classes = predictions.size(-1)
         if (gold_labels >= num_classes).any():
@@ -201,20 +201,20 @@ class LabeledF1Measure(Metric):
         def format(number):
             return number
         metrics = {}
-        metrics["u_pre"] = format(un_precision)
-        metrics["u_re"] =   format(un_recall)
+        metrics["u_P"] = format(un_precision)
+        metrics["u_R"] =   format(un_recall)
 
-        metrics["un_f1"] =   format(un_f1_measure)
-        metrics["pred_f1"] =   format(pred_f1_measure)
-        metrics["lab_f1"] =   format(label_f1_measure)
-        metrics["lab_pre"] =   format(label_precision)
-        metrics["lab_re"] =   format(label_recall)
+        metrics["u_F"] =   format(un_f1_measure)
+        metrics["p_F"] =   format(pred_f1_measure)
+        metrics["l_F"] =   format(label_f1_measure)
+        metrics["l_P"] =   format(label_precision)
+        metrics["l_R"] =   format(label_recall)
 
-        metrics["pre"] =  format(precision)
-        metrics["re"] =   format(recall)
-        metrics["f1"] =  format(f1_measure)
-        metrics["h_s"] =  format(self.scores/self.score_size)
-        metrics["l_s"] =  format(self.linear_scores/self.score_size)
+        metrics["P"] =  format(precision)
+        metrics["R"] =   format(recall)
+        metrics["F"] =  format(f1_measure)
+        metrics["h_S"] =  format(self.scores/self.score_size)
+        metrics["l_S"] =  format(self.linear_scores/self.score_size)
         return metrics
 
     def reset(self):

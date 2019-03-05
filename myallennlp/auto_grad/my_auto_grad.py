@@ -31,8 +31,8 @@ class ComputationNode(object):
 
         if self.states: return self.states[0]
         inputs = [input_dict[name] for name in self.input_names] + [input_dict[name] for name in self.extra_input_names]
-    #    print ("forwarding\n",self.output_name)
-   #     for name in self.input_names: print (name,input_dict[name].size(),input_dict[name])
+  #      print ("forwarding\n",self.output_name)
+     #   for name in self.input_names: print (self.output_name,name,input_dict[name].size())
         all_output  = self.forward_f(*inputs)
 
         if not isinstance(all_output,List) : all_output = [all_output]
@@ -45,7 +45,7 @@ class ComputationNode(object):
         if not self.requires_grad: return {}
 
         assert self.states is not None
-    #    print ("backwarding ",self.output_name,self.states)
+       # print ("backwarding ",self.output_name,self.states)
         grad_inputs = self.backward_f(grad_output, *self.states)
 
         if isinstance(grad_inputs,List) is False: grad_inputs = [grad_inputs]
@@ -77,8 +77,9 @@ class ComputationNode(object):
 class ComputationGraph:
 
 
-    def __init__(self,output_name:str,input_names:List[str],extra_input_names:List[str]=[]):
-        self.output_name = output_name
+    def __init__(self,output_names:[str],input_names:List[str],extra_input_names:List[str]=[]):
+        if isinstance(output_names,str): output_names = [output_names]
+        self.output_names = output_names
         self.input_names = input_names
         self.extra_input_names = extra_input_names
         self.G = nx.DiGraph()
@@ -107,8 +108,9 @@ class ComputationGraph:
             node = self.G.nodes[node_name]["data"]
 
             values[node_name] = node.forward(values)
-
-        return values[self.output_name]
+        if len(self.output_names) == 1:
+            return values[self.output_names[0]]
+        return [values[name] for name in self.output_names]
 
 
     def get_tensor_by_name(self,node_name):
@@ -118,13 +120,22 @@ class ComputationGraph:
         return node.states[0]
 
 
-    def backward(self, grad: torch.Tensor = 1):
+    def backward(self, grads = None):
 
 
 
         execution_order = self.get_backward_order()
-     #   print ("execution_order",execution_order)
-        total_grads_dict  = { self.output_name:grad }
+
+        if grads is None:
+            assert len(self.output_names) == 1
+            total_grads_dict  = { self.output_names[0]:1 }
+        elif isinstance(grads,torch.Tensor):
+
+            total_grads_dict  = { self.output_names[0]:grads }
+        else:
+            total_grads_dict = {}
+            for i,grad in enumerate(grads):
+                total_grads_dict[self.output_names[i]] = grad
 
         for node_name in execution_order:
 

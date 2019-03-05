@@ -111,7 +111,7 @@ class MultiCandidatesSequence(Field[torch.Tensor]):
         max_senses = max([len(labels) for labels in self.labels]+[1])
         self._num_labels = max_senses
 
-        return { "num_heads": max(len(self.labels),1),"max_senses":max_senses}
+        return { "num_heads": len(self.labels),"max_senses":max_senses}
 
     @overrides
     def as_tensor(self, padding_lengths: Dict[str, int]) -> torch.Tensor:
