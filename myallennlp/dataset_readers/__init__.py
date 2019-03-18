@@ -7,7 +7,6 @@ and produce datasets in the formats required by specific models.
 """
 
 # pylint: disable=line-too-long
-from myallennlp.dataset_readers.conll2009 import Conll2009DatasetReader
 
 from myallennlp.dataset_readers.MultiCandidatesSequence import MultiCandidatesSequence
 from myallennlp.dataset_readers.multiindex_field import MultiIndexField

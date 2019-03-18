@@ -22,7 +22,7 @@
   },
   "model": {
     "type": "srl_graph_parser_refine",
-    "base_model_archive": "base_model.tar.gz",
+    "base_model_archive": "base_en_model.tar.gz",
     "dropout": 0.3,
     "encoder": {
       "type": "stacked_bidirectional_lstm",

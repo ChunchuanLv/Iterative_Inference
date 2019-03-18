@@ -11,24 +11,22 @@ allennlp predict /afs/inf.ed.ac.uk/group/project/xchen13/dependency_srl_1_epoch/
 
 
 Dev set:
-allennlp predict   /disk/scratch/s1544871/srl/exps/direct_hard_zh/model.tar.gz \
-/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt \
---batch-size 128 --use-dataset-reader --cuda-device 1 --include-package myallennlp --predictor dependency_srl 
 
-allennlp predict /disk/scratch1/s1544871/srl/exps/spen_soft_zh/model.tar.gz \
+allennlp predict  /disk/scratch1/s1544871/srl/exps/base_zh/model.tar.gz \
 /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-Chinese-development.txt \
---batch-size 128 --use-dataset-reader --cuda-device 2 --include-package myallennlp --predictor dependency_srl 
+--batch-size 128 --cuda-device 1 --use-dataset-reader --include-package myallennlp --predictor dependency_srl 
 
-allennlp predict /disk/scratch1/s1544871/srl/exps/no_noise_no_gumbel/model.tar.gz  \
 
-allennlp predict   /disk/scratch1/s1544871/srl/exps/base_kl_only/model.tar.gz \
+allennlp predict  /disk/scratch1/s1544871/srl/exps/direct_en/model.tar.gz \
+
+allennlp predict  base_en_model.tar.gz \
 /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt \
---batch-size 128   --use-dataset-reader --include-package myallennlp --predictor dependency_srl 
+--batch-size 128 --cuda-device 1  --use-dataset-reader --include-package myallennlp --predictor dependency_srl 
 
 Test set:
-allennlp predict  /disk/scratch1/s1544871/srl/exps/base_4layer/model.tar.gz \
+allennlp predict  base_en_model.tar.gz \
 /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt \
---batch-size 128 --cuda-device 3 --use-dataset-reader --include-package myallennlp --predictor dependency_srl 
+--batch-size 128 --cuda-device 1 --use-dataset-reader --include-package myallennlp --predictor dependency_srl 
 
 
 
@@ -79,7 +77,7 @@ perl eval09.pl -g /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/Co
  
  
 perl eval09.pl -g /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-Chinese-development.txt \
- -s /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-Chinese-development.predict2 -q 
+ -s /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-Chinese-development.predict -q 
  
  
 ood SET

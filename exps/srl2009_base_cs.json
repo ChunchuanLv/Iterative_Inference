@@ -45,6 +45,7 @@
       "tag_representation_dim": 128,
       "dropout": 0.3,
       "input_dropout": 0.3,
+  "delta_type":"hinge_ce",
       "initializer": [
         [
           ".*feedforward.*weight",
@@ -107,7 +108,6 @@
       ],
       "batch_size": 128
     },
-    "evaluate_on_test": true,
     "trainer": {
       "num_epochs": 600,
       "grad_norm": 5.0,
@@ -116,7 +116,6 @@
       "validation_metric": "+F",
       "optimizer": {
         "type": "dense_sparse_adam",
-        "weight_decay":1e-6,
         "betas": [
           0.9,
           0.9

@@ -108,7 +108,7 @@ class MultiCandidatesSequence(Field[torch.Tensor]):
     @overrides
     def get_padding_lengths(self) -> Dict[str, int]:  # pylint: disable=no-self-use
 
-        max_senses = max([len(labels) for labels in self.labels]+[1])
+        max_senses = max([len(labels) for labels in self.labels]+[0])
         self._num_labels = max_senses
 
         return { "num_heads": len(self.labels),"max_senses":max_senses}
@@ -117,7 +117,7 @@ class MultiCandidatesSequence(Field[torch.Tensor]):
     def as_tensor(self, padding_lengths: Dict[str, int]) -> torch.Tensor:
         # pylint: disable=unused-argument
 
-        num_heads = padding_lengths['num_heads']
+        num_heads = padding_lengths['num_heads']  #predicate
         max_senses  = padding_lengths['max_senses']
 
         tensor = torch.zeros(num_heads,max_senses).long()  # vector of zeros

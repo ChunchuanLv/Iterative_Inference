@@ -111,8 +111,9 @@ def lazy_parse(text: str):
 import json
 import os
 
+from myallennlp.dataset_readers.conll2009 import Conll2009DatasetReader
 @DatasetReader.register("conll2009_es")
-class Conll2009EsDatasetReader(DatasetReader):
+class Conll2009EsDatasetReader(Conll2009DatasetReader):
     """
     Reads a file in the conllu Universal Dependencies format.
 
@@ -124,22 +125,6 @@ class Conll2009EsDatasetReader(DatasetReader):
         Whether to use UD POS tags, or to use the language specific POS tags
         provided in the conllu format.
     """
-    def __init__(self,
-                 token_indexers: Dict[str, TokenIndexer] = None,
-                 use_gold: bool = False,
-                 filter:bool=True,
-                 lazy: bool = False,
-                 read_frame_new:bool=False,
-                 data_folder = None) -> None:
-        super().__init__(lazy)
-        self._token_indexers = token_indexers or {'tokens': SingleIdTokenIndexer()}
-        self.use_gold = use_gold
-        self.filter = filter
-        self.data_folder = data_folder
-        self.lemma_to_sensed = self.read_frames(data_folder,read_frame_new)
-        self.read_frame_new = read_frame_new
-        print ("total number of lemma to senses:", len(self.lemma_to_sensed))
-        self.annotated_sentences = []
 
     def save_frames(self,data_folder = None):
         if data_folder is None:
@@ -165,25 +150,6 @@ class Conll2009EsDatasetReader(DatasetReader):
         return  out
 
     @overrides
-    def _read(self, file_path: str):
-        # if `file_path` is a URL, redirect to the cache
-        file_path = cached_path(file_path)
-        training = "train" in file_path or "development" in file_path
-        logger.info("Reading conll2009 srl data from: %s", file_path)
-   #     print ("reading", file_path)
-        with open(file_path) as sdp_file:
-            for annotated_sentence, directed_arc_indices, arc_tags , predicates_indexes in lazy_parse(sdp_file.read()):
-                # If there are no arc indices, skip this instance.
-                if not directed_arc_indices and self.filter and "train" in file_path :
-                    continue
-                self.annotated_sentences.append(annotated_sentence)
-                tokens = [word["form"] for word in annotated_sentence]
-                pred_candidates, sense_indexes, predicates = self.data_for_sense_prediction(annotated_sentence,training)
-                pos_tags = [word["pos"] for word in annotated_sentence] if self.use_gold else [word["ppos"] for word in annotated_sentence]
-                dep_tags = [word["deprel"] for word in annotated_sentence] if self.use_gold else [word["pdeprel"] for word in annotated_sentence]
-                yield self.text_to_instance(tokens, predicates_indexes,pos_tags, dep_tags,directed_arc_indices, arc_tags,pred_candidates, sense_indexes, predicates)
-
-
     def data_for_sense_prediction(self,annotated_sentence,training):
         pred_candidates = []
         predicates = [ word["pred"]  for word in annotated_sentence  if word["fillpred"] == "Y"]
@@ -192,7 +158,7 @@ class Conll2009EsDatasetReader(DatasetReader):
             if word["fillpred"] == "Y":
                 pred = word["pred"]
                 lemma = word["plemma"]
-                if lemma in self.lemma_to_sensed and pred  in self.lemma_to_sensed[lemma] :
+                if training and  lemma in self.lemma_to_sensed and pred  in self.lemma_to_sensed[lemma] :
                     sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
                     pred_candidates.append(self.lemma_to_sensed[lemma] )
                 elif training and self.read_frame_new :
@@ -208,70 +174,26 @@ class Conll2009EsDatasetReader(DatasetReader):
                     else:
                  #       print ("test empty nothing similar",lemma,pred)
                         sense_indexes.append(0)
-                        pred_candidates.append([lemma+".a2"])
+                        pred_candidates.append([lemma+".a"])
 
         return pred_candidates,sense_indexes,predicates
-    @overrides
-    def text_to_instance(self, # type: ignore
-                         tokens: List[str],
-                         predicates_indexes: List[int],
-                         pos_tags: List[str] ,
-                         dep_tags: List[str] ,
-                         arc_indices: List[Tuple[int, int]] = None,
-                         arc_tags: List[str] = None,
-                         pred_candidates:List[List[str]] = None,
-                         sense_indexes:List[int] = None,
-                         predicates:List[str] = None,) -> Instance:
-        # pylint: disable=arguments-differ
-        fields: Dict[str, Field] = {}
-        token_field = TextField([Token(t) for t in tokens], self._token_indexers)
-        assert len(pred_candidates) == len(predicates_indexes)
-        assert len(pred_candidates) == len(sense_indexes)
-        assert len(pred_candidates) == len(predicates)
-
-        assert len(predicates_indexes) == 0 or max(predicates_indexes) < len(tokens)
-        fields["tokens"] = token_field
-        fields["predicate_indexes"] = MultiIndexField(predicates_indexes,label_namespace = "predicate_indexes",padding_value=-1)
-        fields["metadata"] = MetadataField({"tokens": tokens})
-        fields["pos_tags"] = SequenceLabelField(pos_tags, token_field, label_namespace="pos")
-        fields["dep_tags"] = SequenceLabelField(dep_tags, token_field, label_namespace="dep")
-        if arc_indices is not None and arc_tags is not None:
-            fields["arc_tags"] = NonSquareAdjacencyField(arc_indices, token_field, fields["predicate_indexes"], arc_tags,label_namespace="tags")
-
-        fields["predicates"] = IndexSequenceLabelField(predicates,label_namespace="predicates")
-        fields["predicate_candidates"] = MultiCandidatesSequence(pred_candidates, label_namespace="predicates")
-        fields["sense_indexes"] = MultiIndexField(sense_indexes, label_namespace="sense_indexes",padding_value=0)
-
-        return Instance(fields)
 
 
 
 
 def main():
-    data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p1/data/CoNLL2009-ST-Catalan/"
-    with open(data_folder+'/senses.json') as infile:
-
-        print ("load saved senses dict")
-        senses =  defaultdict(lambda: [], **json.load(infile))
-
-        i = 0
-        for predicates in senses.values():
-            i = i + len(predicates)
-        print ("len",len(senses))
-        print ("predicates",i)
-        print ("predicates/lemma",i*1.0/len(senses))
-    return
+    data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p1/data/CoNLL2009-ST-Spanish/"
     reader = Conll2009EsDatasetReader(data_folder = data_folder,read_frame_new=True)
 
-    train_data = reader.read(data_folder+"CoNLL2009-ST-Catalan-train.txt")
-    dev_data = reader.read(data_folder+"CoNLL2009-ST-Catalan-development.txt")
+    train_data = reader.read(data_folder+"CoNLL2009-ST-Spanish-train.txt")
+    dev_data = reader.read(data_folder+"CoNLL2009-ST-Spanish-development.txt")
 
     reader.save_frames()
 
     reader = Conll2009EsDatasetReader(data_folder = data_folder)
+    test_data = reader.read(data_folder +"CoNLL2009-ST-evaluation-Spanish.txt")
 
 
-    dev_data = reader.read(data_folder +"CoNLL2009-ST-evaluation-Catalan.txt")
 
 
 if __name__ == "__main__":

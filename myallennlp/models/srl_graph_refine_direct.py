@@ -4,7 +4,7 @@ import copy
 
 from overrides import overrides
 import torch
-from torch.nn.modules import Dropout
+from torch.nn.modules import Dropout,Linear
 import numpy
 
 import gc
@@ -74,23 +74,43 @@ class SRLGraphParserRefineDirect(Model):
                  vocab: Vocabulary,
                  base_model_archive: str,
                  encoder: Seq2SeqEncoder,
-                 arc_representation_dim:int,
-                 tag_representation_dim:int,
+                 hidden_dim:int = 300,
+                 hiddne_layers:int = 1,
+                 weight_tie:bool=False,
+                 re_estimate_logits:bool=False,
+                 rep_dim:int=0,
                  dropout:float = 0.3,
                  gumbel_t:float=1.0,
+                 straight_through:bool=False,
                  normalize_logits:bool=False,
                  refine_epoch: int = 3,
+                 gradient_pass:bool=False,
+                 add_predicate_emb:bool=False,
+                 testing_ecpoh:int = None,
+                 activation:str="elu",
                  add_logits:bool=False,
+                 denoise_iterations:int=0,
+                 corruption_rate:float=0,
                  finetune:str="no",
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(SRLGraphParserRefineDirect, self).__init__(vocab, regularizer)
         self.refine_epoch = refine_epoch
+        self.gradient_pass =gradient_pass
+        if testing_ecpoh is None:
+            self.testing_ecpoh = refine_epoch
+        else:
+            self.testing_ecpoh = testing_ecpoh
         self.finetune = finetune
+        self.re_estimate_logits = re_estimate_logits
+        self.add_predicate_emb = add_predicate_emb
         self.gumbel_t = gumbel_t
+        self.denoise_iterations = denoise_iterations
+        self._corrupt_mask = lambda x : torch.bernoulli(x.data.new(x.data.size()[:-1]).fill_(1 - corruption_rate)).unsqueeze(-1)
+        self.straight_through = straight_through
         self.add_logits = add_logits
         base_model:SRLGraphParserBase = load_archive(base_model_archive).model
-
+        base_model.gumbel_t = gumbel_t
         num_labels = self.vocab.get_vocab_size("tags")
         if normalize_logits:
             self.normalize_logits = torch.nn.LayerNorm(num_labels+1,elementwise_affine=False)
@@ -105,29 +125,39 @@ class SRLGraphParserRefineDirect(Model):
         self.encoder = encoder
 
         encoder_dim = encoder.get_output_dim()
-        self.arg_arc_feedforward =  FeedForward(encoder_dim, 1,
-                                               arc_representation_dim,
-                                               Activation.by_name("elu")())
-        self.pred_arc_feedforward = FeedForward(encoder_dim+node_dim, 1,
-                                               arc_representation_dim,
-                                               Activation.by_name("elu")())
+        self.rep_dim = rep_dim
+        if rep_dim:
+            self.predicte_rep_feedforward = FeedForward(encoder_dim, 1,
+                                                    rep_dim,
+                                                    Activation.by_name("elu")())
+            self.argument_rep_feedforward = FeedForward(encoder_dim, 1,
+                                                        rep_dim,
+                                                    Activation.by_name("elu")())
+        else:
+            rep_dim = encoder_dim
 
+        self.weight_tie = weight_tie
+        self._arc_tag_lstm_enc = Linear(rep_dim, hidden_dim)
+        self._arc_tag_predicate_enc = Linear(node_dim, hidden_dim)
+        self._arc_tag_tags_enc = Linear(2*num_labels+1, hidden_dim)
 
-        self.arc_attention = BilinearMatrixAttention(arc_representation_dim,
-                                                     arc_representation_dim,
-                                                     use_input_biases=True)
+        self.activation = Activation.by_name(activation)()
 
-        self.arg_tag_feedforward = FeedForward(encoder_dim, 1,
-                                               tag_representation_dim,
-                                               Activation.by_name("elu")())
-        self.pred_tag_feedforward = FeedForward(encoder_dim+node_dim, 1,
-                                               tag_representation_dim,
-                                               Activation.by_name("elu")())
-        self.tag_bilinear = BilinearMatrixAttention(tag_representation_dim,
-                                                    tag_representation_dim,
-                                                    label_dim=num_labels,
-                                                    use_input_biases=True) #,activation=Activation.by_name("tanh")()
-     #   check_dimensions_match(representation_dim, encoder.get_input_dim(), "text field embedding dim", "encoder input dim")
+        if self.weight_tie:
+            assert hiddne_layers == 1
+            self.arc_tag_refiner = lambda x: x.matmul(self._arc_tag_tags_enc.weight[:,:num_labels+1])
+
+            self.predicate_linear = Linear(rep_dim+num_labels+node_dim,hidden_dim)
+            self.predicte_refiner = lambda x: self._input_dropout(self._input_dropout(self.activation(self.predicate_linear(x)))
+                                                                  .matmul(self.predicate_linear.weight[:,rep_dim:rep_dim+node_dim]))
+        else:
+            self.arc_tag_refiner =  FeedForward(hidden_dim, hiddne_layers,
+                                               [hidden_dim]*(hiddne_layers-1)+[num_labels+1],
+                                            [Activation.by_name(activation)()]*(hiddne_layers-1)+[ Activation.by_name("linear")()],dropout=dropout)
+            self.predicte_refiner = FeedForward(rep_dim+num_labels+node_dim, hiddne_layers+1,
+                    [hidden_dim]*hiddne_layers+[node_dim],
+                    [Activation.by_name(activation)()]*hiddne_layers+[Activation.by_name("linear")()],dropout=dropout)
+
 
         self._labelled_f1 = IterativeLabeledF1Measure(negative_label=0, negative_pred=0,
                                                       selected_metrics=["F", "l_F","p_F","h_S"])
@@ -135,9 +165,21 @@ class SRLGraphParserRefineDirect(Model):
         self._sense_loss = torch.nn.NLLLoss(reduction="none")  # ,ignore_index=-1
         initializer(self)
         if  self.finetune == "no":
+            self._pred_embedding = copy.deepcopy(base_model._pred_embedding)
+            if self.re_estimate_logits:
+
+                self.arg_arc_feedforward = copy.deepcopy(base_model.arg_arc_feedforward)
+                self.pred_arc_feedforward = copy.deepcopy(base_model.pred_arc_feedforward)
+
+                self.arc_attention = copy.deepcopy(base_model.arc_attention)
+
+                self.arg_tag_feedforward =  copy.deepcopy(base_model.arg_tag_feedforward)
+                self.pred_tag_feedforward =  copy.deepcopy(base_model.pred_tag_feedforward)
+
+                self.tag_bilinear =  copy.deepcopy(base_model.tag_bilinear)
+                self.predicte_feedforward =  copy.deepcopy(base_model.predicte_feedforward)
             for param in base_model.parameters():
                 param.requires_grad = False
-
         elif self.finetune == "predicate":
             for param in base_model.parameters():
                 param.requires_grad = False
@@ -166,11 +208,7 @@ class SRLGraphParserRefineDirect(Model):
         else:
             assert self.finetune == "all", ("finetune is set as "+self.finetune+" need to be one of no, all, predicate, logits")
 
-        encoder_dim = base_model.encoder.get_output_dim() if self.encoder is  None else self.encoder.get_output_dim()
 
-        self.predicte_feedforward = FeedForward(encoder_dim+num_labels, 1,
-                node_dim,
-                Activation.by_name("elu")())
 
 
         self.base_model = base_model
@@ -228,18 +266,31 @@ class SRLGraphParserRefineDirect(Model):
                                         predicates,
                                         metadata,
                                         arc_tags)
-        arc_tags = arc_tags.long()
+        if arc_tags is not None:
+            arc_tags = arc_tags.long()
 
         # shape (batch_size, predicates_len, batch_max_senses , pred_dim)
-        embedded_candidate_preds = input_dict["embedded_candidate_preds"]
-        input_sense_logits  = input_dict["sense_logits"]
-        input_arc_tag_logits = input_dict["arc_tag_logits"]
-        input_arc_tag_probs = input_dict["arc_tag_probs"]
-        input_sense_probs = input_dict["sense_probs"]
-        embedded_text_input = input_dict["embedded_text_input"]
+        if self.finetune == "no":
+            embedded_candidate_preds = self._pred_embedding(predicate_candidates)
+            input_sense_logits  = input_dict["sense_logits"].detach()
+            input_arc_tag_logits = input_dict["arc_tag_logits"].detach()
+            input_arc_tag_probs = input_dict["arc_tag_probs"].detach()
+            input_sense_probs = input_dict["sense_probs"].detach()
+            embedded_text_input = input_dict["embedded_text_input"].detach()
+            predicate_representation = input_dict["predicate_representation"].detach()
+            encoded_text =  input_dict["encoded_text"].detach()
+            encoded_text_for_predicate =  input_dict["encoded_text_for_predicate"].detach()
+        else:
+            embedded_candidate_preds = input_dict["embedded_candidate_preds"]
+            input_sense_logits  = input_dict["sense_logits"]
+            input_arc_tag_logits = input_dict["arc_tag_logits"]
+            input_arc_tag_probs = input_dict["arc_tag_probs"]
+            input_sense_probs = input_dict["sense_probs"]
+            embedded_text_input = input_dict["embedded_text_input"]
+            predicate_representation = input_dict["predicate_representation"]
+            encoded_text =  input_dict["encoded_text"]
+            encoded_text_for_predicate =  input_dict["encoded_text_for_predicate"]
 
-        input_sense_logits = self._input_dropout(input_sense_logits)
-        input_arc_tag_logits = self._input_dropout(input_arc_tag_logits)
 
         # shape (batch_size, predicates_len, batch_max_senses )
         sense_mask = (predicate_candidates > 0).float()
@@ -260,10 +311,51 @@ class SRLGraphParserRefineDirect(Model):
         graph_mask = predicate_mask.unsqueeze(-1).unsqueeze(1)* float_mask.unsqueeze(-1).unsqueeze(2)
 
 
-        self._labelled_f1(input_arc_tag_probs, arc_tags + 1, graph_mask.squeeze(-1), input_sense_probs, predicate_candidates,
-                          predicates, None, input_arc_tag_probs * input_arc_tag_logits, n_iteration=0)
+        if arc_tags is not None:
+            self._labelled_f1(input_arc_tag_probs, arc_tags + 1, graph_mask.squeeze(-1), input_sense_probs, predicate_candidates,
+                              predicates, None, input_arc_tag_probs * input_arc_tag_logits, n_iteration=0)
 
 
+        local_arc_tag_logits = None
+        local_sense_logits = None
+        if self.re_estimate_logits:
+
+            #    print ("selected encoded_text_for_predicate",encoded_text_for_predicate.size())
+            # shape (batch_size, sequence_length, arc_representation_dim)
+            arg_arc_representation = self._dropout(self.arg_arc_feedforward(encoded_text))
+
+            # shape (batch_size, predicates_len, arc_representation_dim)
+            pred_arc_representation = self._dropout(self.pred_arc_feedforward(encoded_text_for_predicate))
+
+            # shape (batch_size, sequence_length, predicates_len,1)
+            arc_logits = self.arc_attention(arg_arc_representation,
+                                            pred_arc_representation).unsqueeze(-1)  # + (1-predicate_mask)*1e9
+
+            # shape (batch_size, sequence_length, tag_representation_dim)
+            arg_tag_representation = self._dropout(self.arg_tag_feedforward(encoded_text))
+
+            # shape (batch_size, predicates_len, arc_representation_dim)
+            pred_tag_representation = self._dropout(self.pred_tag_feedforward(encoded_text_for_predicate))
+
+            # shape (batch_size, num_tags, sequence_length, predicates_len)
+            arc_tag_logits = self.tag_bilinear(arg_tag_representation,
+                                               pred_tag_representation)
+
+            # Switch to (batch_size, predicates_len, refine_representation_dim)
+            predicate_representation = self._dropout(self.predicte_feedforward(encoded_text_for_predicate))
+
+            # (batch_size, predicates_len, max_sense)
+            local_sense_logits = embedded_candidate_preds.matmul(predicate_representation.unsqueeze(-1)).squeeze(-1)
+            if self.training is False:
+                arc_logits = arc_logits + (1 - predicate_mask.unsqueeze(-1).unsqueeze(1)) * 1e9
+                local_sense_logits = local_sense_logits - (1 - sense_mask) * 1e9
+
+            # Switch to (batch_size, sequence_length, predicates_len, num_tags)
+            arc_tag_logits = arc_tag_logits.permute(0, 2, 3, 1)
+            local_arc_tag_logits = torch.cat([arc_logits, arc_tag_logits], dim=-1).contiguous()
+        else:
+            local_sense_logits = input_sense_logits
+            local_arc_tag_logits = input_arc_tag_logits
         # shape (batch_size, sequence_length, hidden_dim)
         if isinstance(self.encoder, FeedForward):
             encoded_text = self._dropout(self.encoder(embedded_text_input))
@@ -288,89 +380,108 @@ class SRLGraphParserRefineDirect(Model):
         # Switch to (batch_size, predicates_len, encoder_dim)
         encoded_text_for_predicate = encoded_text_for_predicate.gather(dim=1, index=effective_predicate_indexes)
 
-        #    print ("selected encoded_text_for_predicate",encoded_text_for_predicate.size())
-        # shape (batch_size, sequence_length, arc_representation_dim)
-        arg_arc_representation = self._dropout(self.arg_arc_feedforward(encoded_text))
-
-
-        # shape (batch_size, sequence_length, tag_representation_dim)
-        arg_tag_representation = self._dropout(self.arg_tag_feedforward(encoded_text))
 
         output_dict = {
             "tokens": [meta["tokens"] for meta in metadata],
         }
 
+        if arc_tags is not None:
 
-        soft_tags = torch.zeros(size=input_arc_tag_logits.size(), device=input_arc_tag_logits.device)
-        soft_tags.scatter_(3, arc_tags.unsqueeze(3) + 1, 1) * graph_mask
+            soft_tags = torch.zeros(size=input_arc_tag_logits.size(), device=input_arc_tag_logits.device)
+            soft_tags.scatter_(3, arc_tags.unsqueeze(3) + 1, 1) * graph_mask
 
-    #    print ("sense_logits",sense_logits.size(),sense_logits)
-    #    print ("sense_indexes",sense_indexes.size(),sense_indexes)
-        soft_index = torch.zeros(size=input_sense_logits.size(), device=input_sense_logits.device)
-        soft_index.scatter_(2, sense_indexes.unsqueeze(2), 1) * sense_mask
+        #    print ("sense_logits",sense_logits.size(),sense_logits)
+        #    print ("sense_indexes",sense_indexes.size(),sense_indexes)
+            soft_index = torch.zeros(size=input_sense_logits.size(), device=input_sense_logits.device)
+            soft_index.scatter_(2, sense_indexes.unsqueeze(2), 1) * sense_mask
 
+        output_dict["loss"] = torch.zeros(1, device=encoded_text.device)
+        if self.finetune != "no" and arc_tags is not None:
+            output_dict["loss"] = self._construct_loss(input_arc_tag_logits,
+                                    input_arc_tag_probs,
+                                    arc_tags,
+                                    soft_tags,
+                                    input_sense_logits,
+                                    input_sense_probs,
+                                    sense_indexes,
+                                    soft_index,
+                                    graph_mask,
+                                    sense_mask)
 
-        output_dict["loss"] =  0
-
-        lists = [[input_arc_tag_logits, input_arc_tag_probs, input_sense_logits, input_sense_probs]]
 
         arc_tag_probs = input_arc_tag_probs
         sense_probs = input_sense_probs
-        for i in range(self.refine_epoch):
 
+
+        output_dict["arc_tag_probs0"] = arc_tag_probs
+        output_dict["sense_probs0" ] = sense_probs
+
+        if self.rep_dim :
+            encoded_text_for_predicate = self._dropout(self.predicte_rep_feedforward(encoded_text_for_predicate))
+            encoded_text = self._dropout(self.argument_rep_feedforward(encoded_text))
+        if self.straight_through:
+            arc_tag_probs = hard(arc_tag_probs, graph_mask)
+            sense_probs = hard(sense_probs, sense_mask)
+
+        epoch = self.testing_ecpoh if self.training is False else self.refine_epoch
+        for i in range(epoch):
+
+            if not self.gradient_pass:
+                arc_tag_probs = arc_tag_probs.detach()
+                sense_probs = sense_probs.detach()
             all_edges = (arc_tag_probs * graph_mask).sum(1)
 
             all_active_edges = all_edges[:, :, 1:]
 
+            # shape (batch_size, predicates_len, node_dim)
+            predicate_emb = (sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
+                2) * predicate_mask.unsqueeze(-1)
             # Switch to (batch_size, predicates_len, refine_representation_dim)
+            if self.add_predicate_emb:
+                predicate_emb = predicate_representation + predicate_emb
             predicate_representation = self._dropout(
-                self.predicte_feedforward(torch.cat([encoded_text_for_predicate, all_active_edges], dim=-1)))
+                self.predicte_refiner(torch.cat([encoded_text_for_predicate, predicate_emb,all_active_edges], dim=-1)))
+
             # (batch_size, predicates_len, max_sense)
             sense_logits = embedded_candidate_preds.matmul(predicate_representation.unsqueeze(-1)).squeeze(-1)
 
             if self.add_logits:
-                sense_logits = sense_logits + input_sense_logits
+                sense_logits = sense_logits + local_sense_logits
 
             if self.training is False and not  self.add_logits:
                 sense_logits = sense_logits - (1 - sense_mask) * 1e9
 
-            if self.training and  self.gumbel_t :
+            if self.training:
                 sense_logits = sense_logits + self.gumbel_t * (
                             _sample_gumbel(sense_logits.size(), out=sense_logits.new()) - soft_index)
-            sense_probs = torch.nn.functional.softmax(sense_logits.squeeze(-1), dim=-1)*sense_mask
 
-            predicate_emb = (sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
-                2) * predicate_mask.unsqueeze(-1)
 
-            # shape (batch_size, predicates_len, tag_representation_dim)
-            pred_tag_representation = self._dropout(self.pred_tag_feedforward(torch.cat([encoded_text_for_predicate, predicate_emb], dim=-1) ))
+            all_other_edges = (all_edges.unsqueeze(1) - arc_tag_probs )* graph_mask
+            all_other_edges = all_other_edges[:,:,:,1:]
 
-            # shape (batch_size, predicates_len, arc_representation_dim)
-            pred_arc_representation = self._dropout(self.pred_arc_feedforward(torch.cat([encoded_text_for_predicate, predicate_emb], dim=-1) ))
+            encoded_text_enc = self._arc_tag_lstm_enc(encoded_text)
+            predicate_emb_enc = self._arc_tag_predicate_enc(predicate_emb)
 
-            # shape (batch_size, num_tags, sequence_length, predicates_len)
-            arc_tag_logits = self.tag_bilinear(arg_tag_representation,
-                                               pred_tag_representation)
+            tag_input_date = torch.cat([arc_tag_probs,all_other_edges ],dim=-1)
+            tag_enc = self._arc_tag_tags_enc(tag_input_date)
 
-            # shape (batch_size, sequence_length, predicates_len,1)
-            arc_logits = self.arc_attention(arg_arc_representation,
-                                            pred_arc_representation).unsqueeze(-1)  # + (1-predicate_mask)*1e9
+            linear_added = tag_enc + encoded_text_enc.unsqueeze(2).repeat(1, 1, predicate_indexes.size(1), 1) + predicate_emb_enc.unsqueeze(1).repeat(1,
+                                                                                                                    sequence_length,
+                                                                                                                    1,
+                                                                                                                    1)
 
-            if self.training is False and not  self.add_logits:
-                arc_logits = arc_logits + (1 - predicate_mask.unsqueeze(-1).unsqueeze(1)) * 1e9
+            arc_tag_logits = self.arc_tag_refiner(self.activation(self._input_dropout(linear_added)))
 
-            # Switch to (batch_size, sequence_length, predicates_len, num_tags)
-            arc_tag_logits = arc_tag_logits.permute(0, 2, 3, 1)
-            arc_tag_logits = torch.cat([arc_logits, arc_tag_logits], dim=-1).contiguous()
 
             if self.add_logits:
-                arc_tag_logits = arc_tag_logits + input_arc_tag_logits
+                arc_tag_logits = arc_tag_logits + local_arc_tag_logits
 
             if self.training:
                 arc_tag_logits = arc_tag_logits + self.gumbel_t * (
                             _sample_gumbel(arc_tag_logits.size(), out=arc_tag_logits.new()) - soft_tags)
 
             arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits, dim=-1)*graph_mask
+            sense_probs = torch.nn.functional.softmax(sense_logits, dim=-1)*sense_mask
 
 
             if arc_tags is not None:
@@ -385,8 +496,89 @@ class SRLGraphParserRefineDirect(Model):
                          graph_mask,
                          sense_mask)
 
-                output_dict["arc_tag_probs"+str(i)] = arc_tag_probs
-                output_dict["sense_probs"+str(i)] = sense_probs
+                output_dict["loss"] = output_dict["loss"] + loss
+                # We stack scores here because the f1 measure expects a
+                # distribution, rather than a single value.
+                #     arc_tag_probs = torch.cat([one_minus_arc_probs, arc_tag_probs*arc_probs], dim=-1)
+
+                self._labelled_f1(arc_tag_probs, arc_tags + 1, graph_mask.squeeze(-1), sense_probs, predicate_candidates,
+                                  predicates, None, arc_tag_probs*input_arc_tag_logits,n_iteration=i +1)
+
+            if self.straight_through:
+                arc_tag_probs = hard(arc_tag_probs, graph_mask)
+                sense_probs = hard(sense_probs, sense_mask)
+            output_dict["arc_tag_probs"+str(i+1)] = arc_tag_probs
+            output_dict["sense_probs"+str(i+1)] = sense_probs
+
+        epoch = self.denoise_iterations if self.training else 0
+        for i in range(epoch):
+            arc_tag_probs = self.corrupt_one_hot(soft_tags, graph_mask)
+            sense_probs = self.corrupt_index(soft_index, sense_mask)
+
+            all_edges = (arc_tag_probs * graph_mask).sum(1)
+
+            all_active_edges = all_edges[:, :, 1:]
+
+            # shape (batch_size, predicates_len, node_dim)
+            predicate_emb = (sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
+                2) * predicate_mask.unsqueeze(-1)
+            # Switch to (batch_size, predicates_len, refine_representation_dim)
+            predicate_representation = self._dropout(
+                self.predicte_refiner(torch.cat([encoded_text_for_predicate, predicate_emb,all_active_edges], dim=-1)))
+
+            # (batch_size, predicates_len, max_sense)
+            sense_logits = embedded_candidate_preds.matmul(predicate_representation.unsqueeze(-1)).squeeze(-1)
+
+            if self.add_logits:
+                sense_logits = sense_logits + local_sense_logits
+
+            if self.training is False and not  self.add_logits:
+                sense_logits = sense_logits - (1 - sense_mask) * 1e9
+
+            if self.training:
+                sense_logits = sense_logits + self.gumbel_t * (
+                            _sample_gumbel(sense_logits.size(), out=sense_logits.new()) - soft_index)
+
+
+            all_other_edges = (all_edges.unsqueeze(1) - arc_tag_probs )* graph_mask
+            all_other_edges = all_other_edges[:,:,:,1:]
+
+            encoded_text_enc = self._arc_tag_lstm_enc(encoded_text)
+            predicate_emb_enc = self._arc_tag_predicate_enc(predicate_emb)
+
+            tag_input_date = torch.cat([arc_tag_probs,all_other_edges ],dim=-1)
+            tag_enc = self._arc_tag_tags_enc(tag_input_date)
+
+            linear_added = tag_enc + encoded_text_enc.unsqueeze(2).repeat(1, 1, predicate_indexes.size(1), 1) + predicate_emb_enc.unsqueeze(1).repeat(1,
+                                                                                                                    sequence_length,
+                                                                                                                    1,
+                                                                                                                    1)
+
+            arc_tag_logits = self.arc_tag_refiner(self.activation(self._input_dropout(linear_added)))
+
+
+            if self.add_logits:
+                arc_tag_logits = arc_tag_logits + local_arc_tag_logits
+
+            if self.training:
+                arc_tag_logits = arc_tag_logits + self.gumbel_t * (
+                            _sample_gumbel(arc_tag_logits.size(), out=arc_tag_logits.new()) - soft_tags)
+
+            arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits, dim=-1)*graph_mask
+            sense_probs = torch.nn.functional.softmax(sense_logits, dim=-1)*sense_mask
+
+
+            if arc_tags is not None:
+                loss = self._construct_loss(arc_tag_logits,
+                         arc_tag_probs,
+                         arc_tags,
+                         soft_tags,
+                         sense_logits,
+                         sense_probs,
+                         sense_indexes,
+                         soft_index,
+                         graph_mask,
+                         sense_mask)
 
                 output_dict["loss"] = output_dict["loss"] + loss
                 # We stack scores here because the f1 measure expects a
@@ -394,16 +586,51 @@ class SRLGraphParserRefineDirect(Model):
                 #     arc_tag_probs = torch.cat([one_minus_arc_probs, arc_tag_probs*arc_probs], dim=-1)
 
                 self._labelled_f1(arc_tag_probs, arc_tags + 1, graph_mask.squeeze(-1), sense_probs, predicate_candidates,
-                                  predicates, None, arc_tag_probs*input_arc_tag_logits,n_iteration=i + 1)
+                                  predicates, None, arc_tag_probs*input_arc_tag_logits,n_iteration=-i -1)
 
+            if self.straight_through:
+                arc_tag_probs = hard(arc_tag_probs, graph_mask)
+                sense_probs = hard(sense_probs, sense_mask)
+            output_dict["arc_tag_probs"+str(-i-1)] = arc_tag_probs
+            output_dict["sense_probs"+str(-i-1)] = sense_probs
 
-        # output_dict["additional"] = d
-        #  print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$forward added additional$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
-        output_dict["predicate_mask"] = predicate_mask
-        output_dict["sense_mask"] = sense_mask
 
         return output_dict
 
+
+
+    def corrupt_one_hot(self,gold,mask,sample = None):
+        corrupt_mask = self._corrupt_mask(mask)
+        #  corrupt_mask =1
+        if sample is None:
+            sample = mask *  torch.distributions.one_hot_categorical.OneHotCategorical(logits=torch.zeros_like(gold)).sample()
+
+
+        return (gold*corrupt_mask+(1-corrupt_mask)*sample)*mask
+
+    def corrupt_index(self,soft_index,sense_mask,sample = None):
+        sense_mask = sense_mask +1e-6
+        mask_sum =  sense_mask.sum(dim=-1,keepdim=True)
+
+
+        #batch pre_len 1
+        corrupt_mask = self._corrupt_mask(mask_sum)
+
+        if sample is None:
+            probs = sense_mask / mask_sum
+            sample = torch.distributions.one_hot_categorical.OneHotCategorical(probs=probs).sample()
+
+        out = sense_mask * (soft_index*corrupt_mask+(1-corrupt_mask)*sample)
+        ''' 
+        print ("soft_index",soft_index.size())
+        print ("sense_mask",sense_mask.size())
+        print ("mask_sum",mask_sum.size())
+        print ("probs",probs.size())
+        print ("corrupt_mask",corrupt_mask.size())
+        print ("random_sample",random_sample.size())
+        print ("out",out.size()) '''
+
+        return out
 
     @overrides
     def decode(self, output_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:

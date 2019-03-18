@@ -37,29 +37,20 @@ class PropbankReader:
             self.parse_file(f)
 
     def __init__(self, folder_path):
-        self.frame_files_path = folder_to_files_path(folder_path +"/", ".xml")
+        self.frame_files_path = folder_to_files_path(folder_path +"/", ".txt")
         self.parse()
 
     def parse_file(self, f):
-        tree = ET.parse(f)
-        root = tree.getroot()
-        for child in root:
-            if child.tag == "predicate":
-                self.add_lemma(child)
-
-    # add cannonical amr lemma to possible set of words including for aliases of the words
-    def add_lemma(self, node):
-        lemma = node.attrib["lemma"].replace("_", "-")
-        self.frames.setdefault(lemma, [])
-        #    self.frames[lemma] = set()
-        for child in node:
-            if child.tag == "roleset":
-                sensed_predicate = child.attrib["id"]
-                self.frames[lemma].append(sensed_predicate)
-                true_lemma =  sensed_predicate.split(".")[0]
-                if sensed_predicate not in self.frames.setdefault(true_lemma, []):
-                    self.frames[true_lemma].append(sensed_predicate)
-
+        lemma = f.split("/")[-1].split(".")[0]
+        senses = []
+        with open(f) as fp:
+            line = fp.readline()
+            while line:
+                if line.startswith("ELS:") and lemma+"."+line.split(":")[-1].replace("\n","") not in senses:
+                    senses.append(lemma+"."+line.split(":")[-1].replace("\n",""))
+                line = fp.readline()
+        if len(senses) > 0:
+            self.frames[lemma] = senses
 
     def get_frames(self):
         return self.frames
@@ -119,10 +110,9 @@ def lazy_parse(text: str):
 
 import json
 import os
-
 from myallennlp.dataset_readers.conll2009 import Conll2009DatasetReader
-@DatasetReader.register("conll2009_de")
-class Conll2009DeDatasetReader(Conll2009DatasetReader):
+@DatasetReader.register("conll2009_ca")
+class Conll2009CaDatasetReader(Conll2009DatasetReader):
     """
     Reads a file in the conllu Universal Dependencies format.
 
@@ -142,7 +132,6 @@ class Conll2009DeDatasetReader(Conll2009DatasetReader):
         for lemma in self.lemma_to_sensed:
             assert len(self.lemma_to_sensed[lemma]) > 0,(lemma,self.lemma_to_sensed[lemma])
 
-        print ("total number of lemma to senses to save:", len(self.lemma_to_sensed))
         with open(data_folder+'/senses.json', 'w+') as outfile:
             json.dump(self.lemma_to_sensed, outfile)
 
@@ -154,12 +143,12 @@ class Conll2009DeDatasetReader(Conll2009DatasetReader):
                 return defaultdict(lambda: [], **json.load(infile))
 
         print ("build senses dict")
-        esbank = PropbankReader(data_folder+"/frames").get_frames()
+        esbank = PropbankReader(data_folder+"/entries").get_frames()
 
         out = defaultdict(lambda:[],**esbank)
         return  out
 
-    @overrides
+
     def data_for_sense_prediction(self,annotated_sentence,training):
         pred_candidates = []
         predicates = [ word["pred"]  for word in annotated_sentence  if word["fillpred"] == "Y"]
@@ -168,7 +157,7 @@ class Conll2009DeDatasetReader(Conll2009DatasetReader):
             if word["fillpred"] == "Y":
                 pred = word["pred"]
                 lemma = word["plemma"]
-                if training and lemma in self.lemma_to_sensed and pred  in self.lemma_to_sensed[lemma] :
+                if training and  lemma in self.lemma_to_sensed and pred  in self.lemma_to_sensed[lemma] :
                     sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
                     pred_candidates.append(self.lemma_to_sensed[lemma] )
                 elif training and self.read_frame_new :
@@ -177,32 +166,31 @@ class Conll2009DeDatasetReader(Conll2009DatasetReader):
                     sense_indexes.append(self.lemma_to_sensed[lemma].index(pred ))
                     pred_candidates.append(self.lemma_to_sensed[lemma] )
                 else:
-                    if  lemma in self.lemma_to_sensed:
+                    if lemma in self.lemma_to_sensed:
+                #        print ("lemma,similar_lemma,self.lemma_to_sensed[similar_lemma], pred",lemma,similar_lemma,self.lemma_to_sensed[similar_lemma],pred)
                         pred_candidates.append(self.lemma_to_sensed[lemma] )
                         sense_indexes.append(0)
                     else:
                  #       print ("test empty nothing similar",lemma,pred)
                         sense_indexes.append(0)
-                        pred_candidates.append([lemma+".1"])
-
+                        pred_candidates.append([lemma+".a"])
 
         return pred_candidates,sense_indexes,predicates
 
 
 
-
 def main():
-    data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p1/data/CoNLL2009-ST-German/"
-    reader = Conll2009DeDatasetReader(data_folder = data_folder,read_frame_new=True)
+    data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p1/data/CoNLL2009-ST-Catalan/"
+    reader = Conll2009CaDatasetReader(data_folder = data_folder,read_frame_new=True)
 
-    train_data = reader.read(data_folder+"CoNLL2009-ST-German-train.txt")
-    dev_data = reader.read(data_folder+"CoNLL2009-ST-German-development.txt")
+    train_data = reader.read(data_folder+"CoNLL2009-ST-Catalan-train.txt")
+    dev_data = reader.read(data_folder+"CoNLL2009-ST-Catalan-development.txt")
 
     reader.save_frames()
 
-    reader = Conll2009DeDatasetReader(data_folder = data_folder)
+    reader = Conll2009CaDatasetReader(data_folder = data_folder)
+    dev_data = reader.read(data_folder +"CoNLL2009-ST-evaluation-Catalan.txt")
 
-    dev_data = reader.read(data_folder +"CoNLL2009-ST-evaluation-German.txt")
 
 
 

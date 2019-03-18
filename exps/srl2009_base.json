@@ -1,6 +1,6 @@
 {
   "dataset_reader": {
-    "type": "conll2009",
+    "type": "conll2009_en",
     "data_folder": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/",
     "token_indexers": {
       "elmo": {
@@ -21,7 +21,6 @@
         "dropout": 0
       }
       },
-    "delta_type":"kl_only",
       "pos_tag_embedding": {
         "embedding_dim": 64,
         "vocab_namespace": "pos",
@@ -49,6 +48,7 @@
       "tag_representation_dim": 128,
       "dropout": 0.3,
       "input_dropout": 0.3,
+      "delta_type":"hinge_ce",
       "initializer": [
         [
           ".*feedforward.*weight",
@@ -111,16 +111,14 @@
       ],
       "batch_size": 128
     },
-    "evaluate_on_test": true,
     "trainer": {
       "num_epochs": 600,
       "grad_norm": 5.0,
       "patience": 100,
-      "cuda_device":  2,
+      "cuda_device":  1,
       "validation_metric": "+F",
       "optimizer": {
         "type": "dense_sparse_adam",
-        "weight_decay":1e-6,
         "betas": [
           0.9,
           0.9

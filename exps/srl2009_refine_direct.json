@@ -1,18 +1,20 @@
 {
   "dataset_reader": {
-    "type": "conll2009",
+    "type": "conll2009_en",
     "data_folder": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/",
-    "filter": true,
     "token_indexers": {
       "elmo": {
         "type": "elmo_characters"
       }
     }
   },
+  "vocabulary":{
+    "directory_path":"../Iterative_Inference_Models/en_vocabulary"
+  },
   "iterator": {
     "type": "bucket",
-    "batch_size": 128,
     "biggest_batch_first": true,
+    "batch_size": 128,
     "sorting_keys": [
       [
         "tokens",
@@ -21,8 +23,8 @@
     ]
   },
   "model": {
-    "type": "srl_graph_parser_refine_direct",
-    "base_model_archive": "base_model.tar.gz",
+    "type": "srl_graph_parser_refine",
+    "base_model_archive": "../Iterative_Inference_Models/base_en_model.tar.gz",
     "dropout": 0.3,
     "encoder": {
       "type": "stacked_bidirectional_lstm",
@@ -32,11 +34,18 @@
       "recurrent_dropout_probability": 0.3,
       "use_highway": true
     },
-    "arc_representation_dim":300,
-    "tag_representation_dim": 128,
-    "refine_epoch":3,
-    "add_logits":true,
-    "finetune": "no",
+      "refiner": {
+        "type": "direct_refiner",
+        "iterations": 1,
+        "testing_iterations":4,
+        "corruption_iterations":0,
+        "dropout": 0.3,
+        "stright_through": false,
+        "hidden_dim": 200,
+        "corruption_rate": 0.2,
+        "gumbel_t": 1.0
+      },
+    "rep_dim":500,
     "initializer": [
       [
         ".*feedforward.*weight",
@@ -90,9 +99,8 @@
   },
   "train_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt",
   "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt",
-  "test_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt",
   "trainer": {
-    "cuda_device": 3,
+    "cuda_device": 1,
     "grad_norm": 5,
     "num_epochs": 600,
     "optimizer": {
@@ -103,7 +111,6 @@
       ]
     },
     "patience": 100,
-    "validation_metric": "+F"
-  },
-  "evaluate_on_test": true
+    "validation_metric": "+F_2"
+  }
 }

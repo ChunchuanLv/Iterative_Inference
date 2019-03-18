@@ -8,5 +8,4 @@ from myallennlp.models.high_order_biaffine_dependency_parser import HighOrderBia
 from myallennlp.models.srl_graph import SRLGraphParser
 from myallennlp.models.srl_graph_base import SRLGraphParserBase
 from myallennlp.models.srl_graph_refine import SRLGraphParserRefine
-from myallennlp.models.srl_graph_refine2 import SRLGraphParserRefine2
 from myallennlp.models.guided_transformer_dependency_parser import GuidedTransformerBiaffineDependencyParser

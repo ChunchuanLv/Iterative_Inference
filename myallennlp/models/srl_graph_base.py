@@ -80,7 +80,8 @@ class SRLGraphParserBase(Model):
                  pos_tag_embedding: Embedding = None,
                  dep_tag_embedding: Embedding = None,
                  predicate_embedding: Embedding = None,
-                 delta_type: str = "kl_only",
+                 delta_type: str = "hinge_ce",
+                 subtract_gold: bool = False,
                  dropout: float = 0.0,
                  input_dropout: float = 0.0,
                  edge_prediction_threshold: float = 0.5,
@@ -90,6 +91,7 @@ class SRLGraphParserBase(Model):
         super(SRLGraphParserBase, self).__init__(vocab, regularizer)
         self.text_field_embedder = text_field_embedder
         self.encoder = encoder
+        self.subtract_gold = subtract_gold
         self.edge_prediction_threshold = edge_prediction_threshold
         if not 0 < edge_prediction_threshold < 1:
             raise ConfigurationError(f"edge_prediction_threshold must be between "
@@ -262,9 +264,9 @@ class SRLGraphParserBase(Model):
 
         # (batch_size, predicates_len, max_sense)
         sense_logits = embedded_candidate_preds.matmul(predicate_representation.unsqueeze(-1)).squeeze(-1)
-        if self.training is False:
-            arc_logits = arc_logits + (1 - predicate_mask.unsqueeze(-1).unsqueeze(1)) * 1e9
-            sense_logits = sense_logits - (1 - sense_mask) * 1e9
+    #    if self.training is False and False:
+        arc_logits = arc_logits + (1 - predicate_mask.unsqueeze(-1).unsqueeze(1)) * 1e9
+        sense_logits = sense_logits - (1 - sense_mask) * 1e9
 
         # Switch to (batch_size, sequence_length, predicates_len, num_tags)
         arc_tag_logits = arc_tag_logits.permute(0, 2, 3, 1)
@@ -288,6 +290,12 @@ class SRLGraphParserBase(Model):
         # distribution, rather than a single value.
         #     arc_tag_probs = torch.cat([one_minus_arc_probs, arc_tag_probs*arc_probs], dim=-1)
 
+        if self.training:
+            arc_tag_logits = arc_tag_logits + self.gumbel_t * (
+                _sample_gumbel(arc_tag_logits.size(), out=arc_tag_logits.new()) )
+            sense_logits = sense_logits + self.gumbel_t * (
+                            _sample_gumbel(sense_logits.size(), out=sense_logits.new()))
+
         arc_tag_probs, sense_probs = self._greedy_decode(arc_tag_logits, sense_logits)
         if arc_tags is not None:
             loss = self._construct_loss(arc_tag_logits,
@@ -306,13 +314,6 @@ class SRLGraphParserBase(Model):
 
         else:
             loss = 0
-        if self.training:
-            arc_tag_logits = arc_tag_logits + self.gumbel_t * (
-                _sample_gumbel(arc_tag_logits.size(), out=arc_tag_logits.new()) )
-            sense_logits = sense_logits + self.gumbel_t * (
-                            _sample_gumbel(sense_logits.size(), out=sense_logits.new()))
-            arc_tag_probs, sense_probs = self._greedy_decode(arc_tag_logits, sense_logits)
-
 
         output_dict["arc_tag_probs"] = arc_tag_probs
         output_dict["sense_probs"] = sense_probs
@@ -357,12 +358,44 @@ class SRLGraphParserBase(Model):
 
         # shape (batch ,sequence_length,sequence_length ,1)
         delta_tag = self._tag_loss(torch.nn.functional.log_softmax(arc_tag_logits, dim=-1).permute(0, 3, 1, 2),
-                                   arc_tags + 1).unsqueeze(-1)* graph_mask
+                                   arc_tags + 1).unsqueeze(-1) * graph_mask
         delta_sense = self._sense_loss(torch.nn.functional.log_softmax(sense_logits, dim=-1).permute(0, 2, 1),
-                                       sense_indexes).unsqueeze(-1)* sense_mask
+                                       sense_indexes).unsqueeze(-1) * sense_mask
+        if self.delta_type == "kl_only":
 
-        return (delta_tag.sum() + delta_sense.sum() )/ valid_positions # + arc_nll
+            return (delta_tag.sum() + delta_sense.sum() )/ valid_positions # + arc_nll
+        elif self.delta_type == "rec":
 
+            tag_nll = torch.clamp(((-soft_tags + arc_tag_probs) * arc_tag_logits + delta_tag) * graph_mask,
+                                  min=0).sum() / valid_positions
+
+            sense_nll = torch.clamp(((-soft_index + sense_probs) * sense_logits + delta_sense) * sense_mask,
+                                    min=0).sum() / valid_positions
+            nll = sense_nll + tag_nll
+
+            return nll
+        elif self.delta_type == "hinge":
+
+            tag_nll = torch.clamp(((-soft_tags + arc_tag_probs) * arc_tag_logits + 1) * graph_mask,
+                                  min=0).sum() / valid_positions
+
+            sense_nll = torch.clamp(((-soft_index + sense_probs) * sense_logits + 1) * sense_mask,
+                                    min=0).sum() / valid_positions
+            nll = sense_nll + tag_nll
+
+            return nll
+        elif self.delta_type == "hinge_ce":
+
+            tag_nll = ((torch.clamp((-soft_tags + arc_tag_probs) * arc_tag_logits + 1 ,
+                                  min=0)  + delta_tag ) * graph_mask ).sum() / valid_positions
+
+            sense_nll = ((torch.clamp((-soft_index + sense_probs) * sense_logits + 1 ,
+                                    min=0) + delta_sense)* sense_mask).sum() / valid_positions
+            nll = sense_nll + tag_nll
+
+            return nll
+        else:
+            assert False
 
     @staticmethod
     def _greedy_decode(arc_tag_logits: torch.Tensor,

@@ -18,7 +18,6 @@
                 "trainable": true
             }
         },
-    "delta_type":"kl",
       "pos_tag_embedding": {
         "embedding_dim": 64,
         "vocab_namespace": "pos",
@@ -42,6 +41,7 @@
         "recurrent_dropout_probability": 0.3,
         "use_highway": true
       },
+  "delta_type":"kl_only",
       "arc_representation_dim":300,
       "tag_representation_dim": 128,
       "dropout": 0.3,
@@ -108,16 +108,14 @@
       ],
       "batch_size": 128
     },
-    "evaluate_on_test": true,
     "trainer": {
       "num_epochs": 600,
       "grad_norm": 5.0,
       "patience": 100,
-      "cuda_device":  2,
+      "cuda_device":  3,
       "validation_metric": "+F",
       "optimizer": {
         "type": "dense_sparse_adam",
-        "weight_decay":1e-6,
         "betas": [
           0.9,
           0.9
