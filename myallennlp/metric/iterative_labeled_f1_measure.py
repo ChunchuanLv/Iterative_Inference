@@ -82,10 +82,11 @@ class IterativeLabeledF1Measure(Metric):
         sorted_scores = sorted(self.labeled_f1_scores)
 
         iterations =  sorted_scores[-1]
-
         metrics =  self.labeled_f1_scores[iterations].get_metric()
         for metric in metrics:
             if len(self.selected_metrics)== 0 or metric in self.selected_metrics:
+                if metric+"_"+str(iterations)  in all_metrics:
+                    del all_metrics[metric+"_"+str(iterations)]
                 all_metrics[metric] = metrics[metric]
         if reset:
             self.reset()

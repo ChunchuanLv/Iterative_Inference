@@ -19,13 +19,15 @@ from allennlp.nn.util import add_positional_features
 from typing import List, Tuple, Dict
 from myallennlp.modules.refiner.mlp_forward_backward import MLPForwardBackward
 from myallennlp.modules.refiner.graph_auto_encoder import GraphAutoEncoder
+from myallennlp.modules.refiner.graph_auto_encoder1 import GraphAutoEncoder1
 from myallennlp.modules.refiner.graph_auto_encoder2 import GraphAutoEncoder2
 from myallennlp.modules.refiner.graph_auto_encoder3 import GraphAutoEncoder3
 from myallennlp.modules.reparametrization.gumbel_softmax import hard, _sample_gumbel, inplace_masked_gumbel_softmax
 
 
+from myallennlp.modules.refiner.refiner import SRLRefiner
 @Seq2SeqEncoder.register("spens_refiner")
-class SRLRefiner(Seq2SeqEncoder):
+class SPENSRLRefiner(SRLRefiner):
     # pylint: disable=line-too-long
     """
     Implements a stacked self-attention encoder similar to the Transformer
@@ -71,47 +73,22 @@ class SRLRefiner(Seq2SeqEncoder):
         The dropout probability for the attention distributions in each attention layer.
     """
 
-    def __init__(self,
-                 iterations: int = 1,
-                 dropout: float = 0.3,
-                 stright_through: bool = False,
-                 denoise: bool = False,
-                 global_gating: bool = False,
-                 gating: bool = False,
-                 dropout_local: bool = True,
-                 detach_type: str = "no",
-                 gradient_pass:bool=False,
-                 score_dim: int = 40,
-                 graph_encoder:int=2,
-                 corrupt_input: bool = False,
-                 corruption_rate: float = 0.1,
-                 corruption_iterations: int = 1,
-                 testing_iterations: int = 5,
-                 gumbel_t: float = 0.0) -> None:
-        super(SRLRefiner, self).__init__()
-        self.gumbel_t = gumbel_t
-        self.detach_type = detach_type
-        self.gradient_pass = gradient_pass
-        self.denoise = denoise
-        self.gating = gating
-        self.graph_encoder = graph_encoder
-        self.dropout_local = dropout_local
-        self.global_gating = global_gating
-        self.stright_through = stright_through
-        self.iterations = iterations
-        self.score_dim = score_dim
-        self._dropout = Dropout(dropout)
-        self.testing_iterations = testing_iterations
-        self.dropout = dropout
-        self.corruption_rate = corruption_rate
-        self._corrupt_mask = lambda x: torch.bernoulli(
-            x.data.new(x.data.size()[:-1]).fill_(1 - self.corruption_rate)).unsqueeze(-1)
-        self.corrupt_input = corrupt_input
-        self.corruption_iterations = corruption_iterations
-
     def initialize_network(self, n_tags: int, sense_dim: int, rep_dim: int):
-        self.graph_scorer = GraphAutoEncoder(node_dim=sense_dim, edge_dim=n_tags + 1, rep_dim=rep_dim,
-                                              score_dim=self.score_dim, dropout=self.dropout)
+        self.n_tags = n_tags
+        if self.graph_type == 0:
+            self.graph_scorer = GraphAutoEncoder(sense_dim=sense_dim, n_tags=n_tags , rep_dim=rep_dim,
+                                              score_dim=self.hidden_dim, dropout=self.dropout,use_predicate_rep=self.use_predicate_rep)
+        elif self.graph_type == 1:
+            self.graph_scorer = GraphAutoEncoder1(sense_dim=sense_dim, n_tags=n_tags , rep_dim=rep_dim,
+                                              score_dim=self.hidden_dim, dropout=self.dropout,use_predicate_rep=self.use_predicate_rep)
+        elif self.graph_type == 2:
+            self.graph_scorer = GraphAutoEncoder2(sense_dim=sense_dim, n_tags=n_tags , rep_dim=rep_dim,
+                                              score_dim=self.hidden_dim, dropout=self.dropout,use_predicate_rep=self.use_predicate_rep)
+        elif self.graph_type == 3:
+            self.graph_scorer = GraphAutoEncoder3(sense_dim=sense_dim, n_tags=n_tags , rep_dim=rep_dim,
+                                              score_dim=self.hidden_dim, dropout=self.dropout,use_predicate_rep=self.use_predicate_rep)
+        else:
+            assert False
     @overrides
     def get_input_dim(self) -> int:
         return self._input_dim
@@ -125,48 +102,53 @@ class SRLRefiner(Seq2SeqEncoder):
         return True
 
     def one_iteration(self,
-                      predicate_hidden,
+                      predicate_rep,
                       input_sense_logits,
-                      argument_hidden,
+                      argument_rep,
                       input_arc_tag_logits,
-                      predicate_representation,
                       embedded_candidate_preds,
                       graph_mask,
                       sense_mask,
                       predicate_mask,
+                      arc_tag_probs,
+                      sense_probs,
                       soft_tags,
                       soft_index,
-                      arc_tag_probs,
-                      sense_probs):
+                      step_size=1,
+                      sense_rep = None):
 
-    #    print ("predicate_representation",predicate_representation.size())
-        predicate_emb = ((sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
-            2) + predicate_representation) * predicate_mask.unsqueeze(-1)
+        # shape (batch_size, predicates_len, node_dim)
+        if sense_rep is not None:
+            predicate_emb = (self._dropout((sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
+                2) + sense_rep)* predicate_mask.unsqueeze(-1))
+        else:
+            predicate_emb = self._dropout((sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
+                2) * predicate_mask.unsqueeze(-1))
+
         score_nodes, score_edges, grad_to_predicate_emb, grad_to_arc_tag_probs = self.graph_scorer(predicate_emb,
                                                                                                    arc_tag_probs * graph_mask,
-                                                                                                   predicate_hidden,
-                                                                                                   argument_hidden,
+                                                                                                   predicate_rep,
+                                                                                                   argument_rep,
                                                                                                    graph_mask)
+        grad_to_predicate_emb =  self._dropout(grad_to_predicate_emb)
+
         grad_to_sense_probs = embedded_candidate_preds.matmul(grad_to_predicate_emb.unsqueeze(-1)).squeeze(-1)
 
-        input_arc_tag_logits = input_arc_tag_logits + grad_to_arc_tag_probs
-        input_sense_logits = input_sense_logits + grad_to_sense_probs
+        arc_tag_logits = input_arc_tag_logits + grad_to_arc_tag_probs
+        sense_logits = input_sense_logits + grad_to_sense_probs
 
 
-        arc_tag_logits = input_arc_tag_logits
-        sense_logits = input_sense_logits
-        if self.gumbel_t and self.training:
-            arc_tag_logits = arc_tag_logits + self.gumbel_t * (
-                        _sample_gumbel(arc_tag_logits.size(), out=arc_tag_logits.new()))
-            sense_logits = sense_logits + self.gumbel_t * (
-                        _sample_gumbel(sense_logits.size(), out=sense_logits.new()) )
+        if self.training and self.gumbel_t:
+            arc_tag_logits = arc_tag_logits + self.gumbel_t * _sample_gumbel(arc_tag_logits.size(),
+                                                                             out=arc_tag_logits.new())
+            sense_logits = sense_logits  + self.sense_gumbel_t * _sample_gumbel(sense_logits.size(),
+                                                                         out=sense_logits.new())
+        if self.training and self.subtract_gold and soft_tags is not None:
+            arc_tag_logits = arc_tag_logits + self.subtract_gold * (- soft_tags)
+            sense_logits = sense_logits + self.subtract_gold * (- soft_index)
 
-        arc_tag_probs_soft = torch.nn.functional.softmax(arc_tag_logits, dim=-1)
+        arc_tag_probs, sense_probs = self.decode(arc_tag_logits,sense_logits,graph_mask,sense_mask,soft_tags,soft_index,arc_tag_probs,sense_probs,step_size)
 
-        sense_probs_soft = torch.nn.functional.softmax(sense_logits, dim=-1)
-
-        arc_tag_probs = hard(arc_tag_probs_soft, graph_mask) if self.stright_through else arc_tag_probs_soft
-        sense_probs = hard(sense_probs_soft, sense_mask) if self.stright_through  else sense_probs_soft
-
-        return input_arc_tag_logits, arc_tag_probs, input_sense_logits, sense_probs, score_nodes, score_edges
-
+        score_nodes = None if score_nodes is None else score_nodes.sum(-1,keepdim=True)
+        score_edges = None if score_edges is None else score_edges.sum(-1,keepdim=True)
+        return arc_tag_logits, arc_tag_probs, sense_logits, sense_probs, score_nodes, score_edges

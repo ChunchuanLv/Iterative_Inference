@@ -59,7 +59,7 @@ class MultiCandidatesSequence(Field[torch.Tensor]):
         self._label_namespace = label_namespace
         self._label_ids = None
         self._maybe_warn_for_namespace(label_namespace)
-        max_senses = max([len(labels) for labels in self.labels]+[1])
+        max_senses = max([len(labels) for labels in self.labels]+[0])
         self._num_labels = max_senses
 
         for candidates in labels:

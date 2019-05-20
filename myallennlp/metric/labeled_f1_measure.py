@@ -73,13 +73,9 @@ class LabeledF1Measure(Metric):
         negative_label_mask = gold_labels.eq(self._negative_label).float()
         positive_label_mask = 1.0 - negative_label_mask
 
-        assert predictions.dim() == gold_labels.dim()+1,(predictions.size(),gold_labels.size())
         argmax_predictions = predictions.argmax(-1).float()
 
 
-        assert argmax_predictions.size() == negative_label_mask.size(),(predictions.size(),gold_labels.size(),argmax_predictions.size(),negative_label_mask.size())
-        assert argmax_predictions.size() == gold_labels.size(),(argmax_predictions.size(),gold_labels.size())
-        assert negative_label_mask.size() == mask.size(),(negative_label_mask.size(),mask.size())
         # True Negatives: correct non-positive predictions.
         correct_null_predictions = (argmax_predictions ==
                                     gold_labels).float() * negative_label_mask

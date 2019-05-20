@@ -6,11 +6,9 @@
   },
   "train_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p1/data/CoNLL2009-ST-Spanish/CoNLL2009-ST-Spanish-train.txt",
   "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p1/data/CoNLL2009-ST-Spanish/CoNLL2009-ST-Spanish-development.txt",
-  "test_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p1/data/CoNLL2009-ST-Spanish/CoNLL2009-ST-evaluation-Spanish.txt",
   "iterator": {
     "type": "bucket",
     "batch_size": 128,
-    "biggest_batch_first": false,
     "sorting_keys": [
       [
         "tokens",
@@ -18,9 +16,12 @@
       ]
     ]
   },
+  "vocabulary":{
+    "directory_path":"../Iterative_Inference_Models/es_vocabulary"
+  },
   "model": {
-    "type": "srl_graph_parser_refine_direct3",
-    "base_model_archive": "base_es_model.tar.gz",
+    "type": "srl_graph_parser_refine",
+    "base_model_archive": "../Iterative_Inference_Models/base_es_model.tar.gz",
     "dropout": 0.3,
     "encoder": {
       "type": "stacked_bidirectional_lstm",
@@ -30,21 +31,25 @@
       "recurrent_dropout_probability": 0.3,
       "use_highway": true
     },
-    "hidden_dim":200,
-    "rep_dim":428,
-    "refine_epoch":2,
-    "testing_ecpoh":3,
-    "hiddne_layers":1,
-    "gumbel_t":1,
-    "weight_tie":false,
-    "straight_through":false,
-    "activation":"sigmoid",
-    "add_logits":true,
-    "denoise_iterations":1,
-    "add_predicate_emb":true,
-    "corruption_rate":0.2,
-    "re_estimate_logits":false,
-    "finetune": "no",
+      "refiner": {
+        "type": "direct_refiner",
+        "iterations": 2,
+        "testing_iterations":4,
+        "corruption_iterations":0,
+        "dropout": 0.3,
+        "stright_through": false,
+        "hidden_dim": 200,
+        "corruption_rate": 0.2,
+        "gumbel_t": 5.0,
+        "sense_gumbel_t":50,
+        "subtract_gold":1.0,
+        "graph_type":2,
+        "weight_tie":true,
+        "use_predicate_rep":true
+      },
+    "rep_dim":200,
+    "train_score":0,
+    "delta_type":"theory",
     "initializer": [
       [
         ".*feedforward.*weight",
@@ -97,9 +102,10 @@
     ],
   },
   "trainer": {
-    "cuda_device": 1,
+    "cuda_device": 0,
+    "num_serialized_models_to_keep":5,
     "grad_norm": 5,
-    "num_epochs": 600,
+    "num_epochs": 300,
     "optimizer": {
       "type": "dense_sparse_adam",
       "betas": [
@@ -109,6 +115,5 @@
     },
     "patience": 200,
     "validation_metric": "+F_2"
-  },
-  "evaluate_on_test": true
+  }
 }

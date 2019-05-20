@@ -13,8 +13,7 @@
   },
   "iterator": {
     "type": "bucket",
-    "biggest_batch_first": true,
-    "batch_size": 128,
+    "batch_size": 64,
     "sorting_keys": [
       [
         "tokens",
@@ -36,16 +35,23 @@
     },
       "refiner": {
         "type": "direct_refiner",
-        "iterations": 1,
+        "iterations": 2,
         "testing_iterations":4,
         "corruption_iterations":0,
         "dropout": 0.3,
         "stright_through": false,
-        "hidden_dim": 200,
+        "hidden_dim": 300,
         "corruption_rate": 0.2,
-        "gumbel_t": 1.0
+        "gumbel_t": 5.0,
+        "sense_gumbel_t":50,
+        "subtract_gold":1.0,
+        "graph_type":0,
+        "weight_tie":true,
+        "use_predicate_rep":true
       },
-    "rep_dim":500,
+    "rep_dim":300,
+    "train_score":0,
+    "delta_type":"theory",
     "initializer": [
       [
         ".*feedforward.*weight",
@@ -101,16 +107,18 @@
   "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt",
   "trainer": {
     "cuda_device": 1,
+    "num_serialized_models_to_keep":5,
     "grad_norm": 5,
     "num_epochs": 600,
     "optimizer": {
       "type": "dense_sparse_adam",
+      "lr":3e-4,
       "betas": [
         0.9,
         0.9
       ]
     },
-    "patience": 100,
+    "patience": 600,
     "validation_metric": "+F_2"
   }
 }

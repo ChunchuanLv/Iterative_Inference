@@ -1,5 +1,5 @@
 from overrides import overrides
-import torch
+import torch,math
 from torch.nn import Dropout
 import torch.nn.functional as F
 
@@ -21,6 +21,7 @@ from myallennlp.modules.refiner.mlp_forward_backward import MLPForwardBackward
 from myallennlp.modules.refiner.graph_auto_encoder import GraphAutoEncoder
 from myallennlp.modules.reparametrization.gumbel_softmax import hard, _sample_gumbel, inplace_masked_gumbel_softmax
 
+from myallennlp.modules.sparsemax import sparse_max
 
 class SRLRefiner(Seq2SeqEncoder):
     # pylint: disable=line-too-long
@@ -74,11 +75,21 @@ class SRLRefiner(Seq2SeqEncoder):
                  stright_through: bool = False,
                  hidden_dim: int = 40,
                  corruption_rate: float = 0.1,
-                 corruption_iterations: int = 1,
+                 corruption_iterations: int = 0,
                  testing_iterations: int = 5,
-                 gumbel_t: float = 0.0) -> None:
+                 gumbel_t: float = 0.0,
+                 sense_gumbel_t:float = 0.0,
+                 weight_tie:bool=False,
+                 fw_update :bool = False,
+                 activation:str="sigmoid",
+                 use_predicate_rep:bool=False,
+                 subtract_gold:float=1.0,
+                 graph_type:int = 0,
+                 sparse_max:bool=False) -> None:
         super(SRLRefiner, self).__init__()
         self.gumbel_t = gumbel_t
+        self.sense_gumbel_t = sense_gumbel_t
+        self.fw_update = fw_update
         self.stright_through = stright_through
         self.iterations = iterations
         self.hidden_dim = hidden_dim
@@ -89,6 +100,13 @@ class SRLRefiner(Seq2SeqEncoder):
         self._corrupt_mask = lambda x: torch.bernoulli(
             x.data.new(x.data.size()[:-1]).fill_(1 - self.corruption_rate)).unsqueeze(-1)
         self.corruption_iterations = corruption_iterations
+        self.weight_tie = weight_tie
+        self.activation =  Activation.by_name(activation)()
+        self.use_predicate_rep = use_predicate_rep
+        self.subtract_gold = subtract_gold
+        self.graph_type = graph_type
+        self.sparse_max = sparse_max
+        self.log_corruption_ratio = math.log((1-corruption_rate)/corruption_rate)
 
     def initialize_network(self, n_tags: int, sense_dim: int, rep_dim: int):
         pass
@@ -115,10 +133,26 @@ class SRLRefiner(Seq2SeqEncoder):
                       sense_mask,
                       predicate_mask,
                       arc_tag_probs,
-                      sense_probs):
+                      sense_probs,
+                      soft_tags,
+                      soft_index,
+                      step_size=1,
+                      sense_rep = None):
         pass
 
+    def decode(self,arc_tag_logits,sense_logits,graph_mask,sense_mask,soft_tags,soft_index,arc_tag_probs=None,sense_probs=None,step_size = 1.0):
 
+
+        arc_tag_probs_t = torch.nn.functional.softmax(arc_tag_logits, dim=-1) * graph_mask
+        sense_probs_t = torch.nn.functional.softmax(sense_logits, dim=-1) * sense_mask
+
+        if arc_tag_probs is not None:
+            arc_tag_probs = arc_tag_probs + step_size * (arc_tag_probs_t-arc_tag_probs)
+            sense_probs = sense_probs + step_size * (sense_probs_t-sense_probs)
+        else:
+            arc_tag_probs = arc_tag_probs_t
+            sense_probs = sense_probs_t
+        return arc_tag_probs,sense_probs
     @overrides
     def forward(self, predicate_hidden,
                 argument_hidden,
@@ -128,11 +162,10 @@ class SRLRefiner(Seq2SeqEncoder):
                 predicate_mask,
                 input_arc_tag_logits,
                 input_sense_logits,
-                arc_tag_probs_soft,
-                sense_probs_soft,
                 soft_tags=None,
                 soft_index=None,
-                compute_gold=False):  # pylint: disable=arguments-differ
+                compute_gold=False,
+                sense_rep = None):  # pylint: disable=arguments-differ
         '''
 
         :param predict_representation:
@@ -153,18 +186,17 @@ class SRLRefiner(Seq2SeqEncoder):
 
   #      print ("refiner2 in predicate_representation",predicate_representation.size())
 
-        arc_tag_probs = hard(arc_tag_probs_soft, graph_mask) if self.stright_through else arc_tag_probs_soft
-        sense_probs = hard(sense_probs_soft, sense_mask) if self.stright_through else sense_probs_soft
+        arc_tag_probs, sense_probs = self.decode(input_arc_tag_logits,input_sense_logits,graph_mask,sense_mask,soft_tags,soft_index)
 
-        arc_tag_logits_list = [input_arc_tag_logits]
-        arc_tag_probs_list = [arc_tag_probs]
-        sense_logits_list = [input_sense_logits]
-        sense_probs_list = [sense_probs]
+        arc_tag_logits_list = []
+        arc_tag_probs_list = []
+        sense_logits_list = []
+        sense_probs_list = []
         node_scores_list = []
         edge_scores_list = []
 
 
-        iterations = self.iterations if self.training else self.testing_iterations
+        iterations = self.iterations if self.training else 5
         #      arg_intermediates_list = []
         #  predicate_representation = predicate_representation.detach()
         for i in range(iterations):
@@ -179,7 +211,11 @@ class SRLRefiner(Seq2SeqEncoder):
                 sense_mask,
                 predicate_mask,
                 arc_tag_probs,
-                sense_probs
+                sense_probs,
+                        soft_tags,
+                        soft_index,
+                step_size = 2.0 / (2.0 + i) if self.fw_update else 1.0,
+                sense_rep = sense_rep
             )
 
             arc_tag_logits_list.append(arc_tag_logits)
@@ -189,15 +225,7 @@ class SRLRefiner(Seq2SeqEncoder):
             node_scores_list.append(score_nodes)
             edge_scores_list.append(score_edges)
 
-        node_scores_list.append(None)
-        edge_scores_list.append(None)
 
-        c_arc_tag_logits_list = []
-        c_arc_tag_probs_list = []
-        c_sense_logits_list = []
-        c_sense_probs_list = []
-        c_node_scores_list = []
-        c_edge_scores_list = []
 
         if soft_tags is not None and compute_gold:
             gold_arc_tag_logits, gold_arc_tag_probs, gold_sense_logits, gold_sense_probs, gold_score_nodes, gold_score_edges = self.one_iteration(
@@ -210,7 +238,10 @@ class SRLRefiner(Seq2SeqEncoder):
                         sense_mask,
                         predicate_mask,
                         soft_tags,
-                        soft_index
+                        soft_index,
+                        soft_tags,
+                        soft_index,
+                sense_rep = sense_rep
                 )
 
             gold_results = [gold_score_nodes, gold_score_edges, gold_sense_logits, gold_sense_probs,
@@ -218,12 +249,19 @@ class SRLRefiner(Seq2SeqEncoder):
         else:
             gold_results = [None] * 6
 
+        c_arc_tag_logits_list = []
+        c_arc_tag_probs_list = []
+        c_sense_logits_list = []
+        c_sense_probs_list = []
+        c_node_scores_list = []
+        c_edge_scores_list = []
+
         iterations = self.corruption_iterations if self.training else 1
         if self.corruption_rate and soft_tags is not None and self.training:
             for i in range(iterations):
                 c_soft_tags = self.corrupt_one_hot(soft_tags, graph_mask)
                 c_soft_index = self.corrupt_index(soft_index, sense_mask)
-                gold_arc_tag_logits, gold_arc_tag_probs, gold_sense_logits, gold_sense_probs, score_nodes, score_edges = self.one_iteration(
+                arc_tag_logits, arc_tag_probs, sense_logits, sense_probs, score_nodes, score_edges = self.one_iteration(
                         predicate_hidden,
                         input_sense_logits,
                         argument_hidden,
@@ -233,15 +271,22 @@ class SRLRefiner(Seq2SeqEncoder):
                         sense_mask,
                         predicate_mask,
                         c_soft_tags,
-                        c_soft_index
+                        c_soft_index,
+                        soft_tags,
+                        soft_index,
+                sense_rep = sense_rep
                          )
+                c_arc_tag_logits_list.append(arc_tag_logits)
+                c_arc_tag_probs_list.append(arc_tag_probs)
+                c_sense_logits_list.append(sense_logits)
+                c_sense_probs_list.append(sense_probs)
+                if score_nodes is not None :
+                    c_node_scores_list.append(score_nodes)
+                    c_edge_scores_list.append(score_edges)
 
-                c_arc_tag_logits_list.append(gold_arc_tag_logits)
-                c_arc_tag_probs_list.append(gold_arc_tag_probs)
-                c_sense_logits_list.append(gold_sense_logits)
-                c_sense_probs_list.append(gold_sense_probs)
-                c_node_scores_list.append(score_nodes)
-                c_edge_scores_list.append(score_edges)
+                else:
+                    c_node_scores_list.append(None)
+                    c_edge_scores_list.append(None)
 
         return (arc_tag_logits_list, arc_tag_probs_list, sense_logits_list, sense_probs_list, node_scores_list,
                 edge_scores_list), \

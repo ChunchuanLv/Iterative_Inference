@@ -48,31 +48,30 @@ class GraphAutoEncoder(Seq2SeqEncoder):
 
     def __init__(self,
                  sense_dim: int,
-                 edge_dim: int,
+                 n_tags: int,
                  rep_dim: int,
                  score_dim: int,
-                 dropout: float = 0.3) -> None:
+                 dropout: float = 0.3,
+                 use_predicate_rep = True) -> None:
         super(GraphAutoEncoder, self).__init__()
         self.dropout = dropout
         self._dropout = Dropout(dropout)
         self._node_dim = sense_dim
-        self._edge_dim = edge_dim
         self._score_dim = score_dim
         self._hidden_dim = rep_dim
-
+        self.use_predicate_rep = use_predicate_rep
         self.h = nn.functional.softplus
 
         self.sigmoid = nn.functional.sigmoid
 
-        #   self._message_combine = Linear(hidden_dim, score_dim)
+        self._arc_tag_arg_enc = Linear(rep_dim, score_dim)
+        if self.use_predicate_rep :
+            self._arc_tag_pred_enc = Linear(rep_dim, score_dim)
 
-        self._node_score = Linear(edge_dim - 1 + node_dim + rep_dim, score_dim)
+        self._arc_tag_sense_enc = Linear(sense_dim, score_dim)
+        self._arc_tag_tags_enc = Linear(2*n_tags+1, score_dim)
 
-        self._edge_score = Linear(2 * edge_dim - 1, score_dim)
-        self._edge_hidden = Linear( rep_dim, score_dim)
-        self._edge_node = Linear( node_dim, score_dim)
-        #    self._pred_mess = Linear(hidden_dim, hidden_dim)
-        #     self._arg_mess = Linear(hidden_dim, hidden_dim)
+        self._predicte_score= Linear(rep_dim + n_tags  + sense_dim, score_dim)
 
         self._dropout = Dropout(dropout)
 
@@ -87,8 +86,8 @@ class GraphAutoEncoder(Seq2SeqEncoder):
         return True
 
     def get_computation_graph(self,
-                              nodes: torch.Tensor,
-                              edges: torch.Tensor,
+                              predicate_emb: torch.Tensor,
+                              arc_tag_probs: torch.Tensor,
                               predicate_rep: torch.Tensor,
                               argument_rep: torch.Tensor,
                               graph_mask: torch.Tensor = None):
@@ -117,90 +116,104 @@ class GraphAutoEncoder(Seq2SeqEncoder):
 
             return lambda x: inner_wrap(f, x)
 
-        graph = ComputationGraph(["linear_node_scores", "linear_edge_scores"], ["nodes", "edges"] )
+        graph = ComputationGraph(["linear_predicate_scores", "linear_role_scores"], ["predicate_emb", "arc_tag_probs"] )
 
         # edge_rep (batch_size, pre_len,node_dim)
-        graph.add_node(ComputationNode("all_edges", ["edges"], lambda edges: (edges * graph_mask).sum(1, keepdim=True),
-                                       lambda grad, all_edges, edges: grad.expand_as(edges) * graph_mask))
+        graph.add_node(ComputationNode("all_tag_probs", ["arc_tag_probs"], lambda arc_tag_probs: (arc_tag_probs * graph_mask).sum(1, keepdim=True),
+                                       lambda grad, all_tag_probs, arc_tag_probs: grad.expand_as(arc_tag_probs) * graph_mask))
 
-        def node_score_forward(all_edges, nodes):
+        def node_score_forward(all_edges, predicate_emb):
             all_edges = all_edges[:, :, :, 1:]
-            cated = torch.cat([all_edges.squeeze(1), nodes, predicate_rep], dim=-1)
-            return self._node_score(cated)
+            cated = torch.cat([all_edges.squeeze(1), predicate_emb, predicate_rep], dim=-1)
+            return self._predicte_score(cated)
 
-        def node_score_backward(grad, score, all_edges, nodes):
+        def node_score_backward(grad, score, all_edges, predicate_emb):
             # batch_size , pre_len , catted_dim
-            backed_grad = grad.matmul(self._node_score.weight)
+            backed_grad = grad.matmul(self._predicte_score.weight)
 
             grad_to_all_edges = backed_grad[:, :, :(all_edges.size(-1) - 1)].unsqueeze(1)
 
             padded_grad_toall_edges = torch.cat(
                 [torch.zeros_like(grad_to_all_edges[:, :, :, 0]).unsqueeze(-1), grad_to_all_edges], dim=-1) * graph_mask
 
-            grad_to_nodes = backed_grad[:, :, grad_to_all_edges.size(-1):grad_to_all_edges.size(-1) + nodes.size(-1)]
+            grad_to_predicate_emb = backed_grad[:, :, grad_to_all_edges.size(-1):grad_to_all_edges.size(-1) + predicate_emb.size(-1)]
 
-            return [padded_grad_toall_edges, grad_to_nodes]
+            return [padded_grad_toall_edges, grad_to_predicate_emb]
 
         # A tensor of shape (batch_size, timesteps, pre_len ,hidden_dim)
-        graph.add_node(ComputationNode("linear_node_scores", ["all_edges", "nodes"],
+        graph.add_node(ComputationNode("linear_predicate_scores", ["all_tag_probs", "predicate_emb"],
                                        node_score_forward,
                                        node_score_backward))
 
-        def edge_score_forward(edges, all_edges, nodes):
-            negative_edges = (all_edges - edges) * graph_mask
-            negative_edges = negative_edges[:, :, :, 1:]
+        def edge_score_forward(arc_tag_probs, all_tag_probs, predicate_emb):
+            other_tags = (all_tag_probs - arc_tag_probs) * graph_mask
+            other_tags = other_tags[:, :, :, 1:]
 
-            hidden_mapped = self._edge_hidden(argument_rep)
-            node_mapped = self._edge_node(nodes)
-            cated = torch.cat([edges, negative_edges], dim=-1)
-            return self._edge_score(cated) + node_mapped.unsqueeze(1).repeat(1, edges.size(1), 1, 1) + hidden_mapped.unsqueeze(2).repeat(1, 1, edges.size(2), 1)
+            encoded_arg_enc = self._arc_tag_arg_enc(argument_rep)
+            if self.use_predicate_rep:
+                encoded_pred_enc = self._arc_tag_pred_enc(predicate_rep)
 
-        def edge_score_backward(grad, score, edges, all_edges, nodes):
+            predicate_emb_enc = self._arc_tag_sense_enc(predicate_emb)
+
+            tag_input_date = torch.cat([arc_tag_probs, other_tags], dim=-1)
+            tag_enc = self._arc_tag_tags_enc(tag_input_date)
+
+            if self.use_predicate_rep:
+                linear_added = tag_enc + encoded_arg_enc.unsqueeze(2).expand_as(tag_enc) + predicate_emb_enc.unsqueeze(
+                    1).expand_as(tag_enc) + encoded_pred_enc.unsqueeze(1).expand_as(tag_enc)
+            else:
+                linear_added = tag_enc + encoded_arg_enc.unsqueeze(2).expand_as(tag_enc) + predicate_emb_enc.unsqueeze(
+                    1).expand_as(tag_enc)
+
+            return linear_added
+
+        def edge_score_backward(grad, score, arc_tag_probs, all_tag_probs, predicate_emb):
             # batch_size , seq_len, pre_len , catted_dim
-            backed_grad = grad.matmul(self._edge_score.weight)
+            grad_to_tags = grad.matmul(self._arc_tag_tags_enc.weight)
 
-            grad_to_edges = backed_grad[:, :, :, :edges.size(-1)] * graph_mask
+            current = arc_tag_probs.size(-1)
 
-            current = edges.size(-1)
+            grad_to_arc_tag_probs = grad_to_tags[:, :, :, :current] * graph_mask
 
-            grad_to_negative_edges = backed_grad[:, :, :, current:]
+            grad_to_other_tags = grad_to_tags[:, :, :, current:]* graph_mask
 
 
-            padded_grad_to_negative_edges = torch.cat(
-                [torch.zeros_like(grad_to_negative_edges[:, :, :, 0]).unsqueeze(-1), grad_to_negative_edges],
+            padded_grad_to_other_tags = torch.cat(
+                [torch.zeros_like(grad_to_other_tags[:, :, :, 0]).unsqueeze(-1), grad_to_other_tags],
                 dim=-1) * graph_mask
-            grad_to_edges = grad_to_edges - padded_grad_to_negative_edges
 
-            grad_to_all_edges = padded_grad_to_negative_edges.sum(1, keepdim=True)
+            grad_to_arc_tag_probs = grad_to_arc_tag_probs - padded_grad_to_other_tags
 
-            grad_to_nodes = (grad.matmul(self._edge_node.weight) * graph_mask).sum(1)
+            grad_to_all_tag_probs = padded_grad_to_other_tags.sum(1, keepdim=True)
 
-            return [grad_to_edges, grad_to_all_edges, grad_to_nodes]
+            grad_to_predicate_emb = (grad.matmul(self._arc_tag_sense_enc.weight) * graph_mask).sum(1)
+
+            return [grad_to_arc_tag_probs, grad_to_all_tag_probs, grad_to_predicate_emb]
 
         # A tensor of shape (batch_size, timesteps, pre_len ,hidden_dim)
-        graph.add_node(ComputationNode("linear_edge_scores", ["edges", "all_edges", "nodes"],
+        graph.add_node(ComputationNode("linear_role_scores", ["arc_tag_probs", "all_tag_probs", "predicate_emb"],
                                        edge_score_forward,
                                        edge_score_backward))
 
-        graph.forward([nodes, edges])
+        graph.forward([predicate_emb, arc_tag_probs])
         return graph
 
     def score(self, graph: ComputationGraph, graph_mask):
         # shape  (batch_size, timesteps, timesteps , score_dim)
-        linear_edge_scores = graph.get_tensor_by_name("linear_edge_scores")
-        linear_node_scores = graph.get_tensor_by_name("linear_node_scores")
+        linear_edge_scores = graph.get_tensor_by_name("linear_role_scores")
+        linear_node_scores = graph.get_tensor_by_name("linear_predicate_scores")
         return self.h(linear_node_scores) * graph_mask[:, 0], self.h(linear_edge_scores) * graph_mask
 
     def score_gradient(self, graph: ComputationGraph, graph_mask: torch.Tensor):
-        linear_edge_scores = graph.get_tensor_by_name("linear_edge_scores")
-        linear_node_scores = graph.get_tensor_by_name("linear_node_scores")
+        linear_edge_scores = graph.get_tensor_by_name("linear_role_scores")
+        linear_node_scores = graph.get_tensor_by_name("linear_predicate_scores")
 
-        return self._dropout(self.sigmoid(linear_node_scores)) * graph_mask[:, 0], \
-               self._dropout( self.sigmoid(linear_edge_scores) )* graph_mask
+        return self.sigmoid(linear_node_scores) * graph_mask[:, 0], \
+                self.sigmoid(linear_edge_scores) * graph_mask
 
     def get_score_and_graph(self,
-                            nodes: torch.Tensor,
-                            edges: torch.Tensor,
+                            predicate_emb: torch.Tensor,
+                            arc_tag_probs: torch.Tensor,
                             predicate_rep: torch.Tensor, argument_rep: torch.Tensor,
                             graph_mask: torch.Tensor = None):
         '''
@@ -208,14 +221,14 @@ class GraphAutoEncoder(Seq2SeqEncoder):
         inputs : ``torch.FloatTensor``, required.
             A tensor of shape (batch_size, timesteps, timesteps, input_dim)
         '''
-        graph = self.get_computation_graph(nodes, edges, predicate_rep, argument_rep, graph_mask)
+        graph = self.get_computation_graph(predicate_emb, arc_tag_probs, predicate_rep, argument_rep, graph_mask)
 
         return self.score(graph, graph_mask), graph
 
     @overrides
     def forward(self,
-                nodes: torch.Tensor,
-                edges: torch.Tensor,
+                predicate_emb: torch.Tensor,
+                arc_tag_probs: torch.Tensor,
                 predicate_rep: torch.Tensor,
                 argument_rep: torch.Tensor,
                 graph_mask: torch.Tensor = None,
@@ -237,7 +250,7 @@ class GraphAutoEncoder(Seq2SeqEncoder):
         gradient w.r.t to score m1 Relu m2 input
         """
 
-        scores, graph = self.get_score_and_graph(nodes, edges, predicate_rep, argument_rep, graph_mask)
+        scores, graph = self.get_score_and_graph(predicate_emb, arc_tag_probs, predicate_rep, argument_rep, graph_mask)
         grads = self.score_gradient(graph, graph_mask)
         score_nodes, score_edges = scores
         grad_to_nodes, grad_to_edges = graph.backward(grads)
@@ -252,6 +265,12 @@ def main():
                  hidden_dim: int,
                  score_dim: int,
 
+                 sense_dim: int,
+                 n_tags: int,
+                 rep_dim: int,
+                 score_dim: int,
+                 dropout: float = 0.3,
+                 use_predicate_rep = True
     :return:
     '''
     node_dim = 2
@@ -261,7 +280,7 @@ def main():
 
     batch_size = 2
     graph_size = 3
-    mlpfbb = GraphAutoEncoder3(node_dim, edge_dim, hidden_dim, score_dim)
+    mlpfbb = GraphAutoEncoder(sense_dim=node_dim, n_tags=edge_dim-1,rep_dim= hidden_dim, score_dim=score_dim,dropout=0.3,use_predicate_rep=False)
     mlpfbb.eval()
     nodes = torch.rand(batch_size, graph_size, node_dim, requires_grad=True)
     argument_rep = torch.rand(batch_size, graph_size * 2, hidden_dim)

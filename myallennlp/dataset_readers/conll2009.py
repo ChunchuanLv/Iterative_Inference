@@ -116,7 +116,7 @@ def lazy_parse(text: str):
     for sentence in text.split("\n\n"):
         if sentence:
             yield parse_sentence(sentence)
-
+import jellyfish
 
 import json
 import os
@@ -227,9 +227,21 @@ class Conll2009DatasetReader(DatasetReader):
                         pred_candidates.append(self.lemma_to_sensed[lemma] )
                         sense_indexes.append(0)
                     else:
-                 #       print ("test empty nothing similar",lemma,pred)
                         sense_indexes.append(0)
                         pred_candidates.append([lemma+".01"])
+                    '''    lemma_candidates = []
+                        for le in self.lemma_to_sensed:
+                            distance = jellyfish.damerau_levenshtein_distance(le, lemma)
+                            if distance < 3:
+                                lemma_candidates.append((distance,le))
+                        if len(lemma_candidates) > 0 :
+                            d, le = sorted(lemma_candidates, key = lambda x: x[0])[0]
+                            sense_indexes.append(0)
+                            pred_candidates.append(self.lemma_to_sensed[le] )
+                            print (lemma,le,lemma_candidates)
+                        else:
+                            sense_indexes.append(0)
+                            pred_candidates.append([lemma+".01"])'''
 
         return pred_candidates,sense_indexes,predicates
     @overrides
@@ -267,12 +279,12 @@ class Conll2009DatasetReader(DatasetReader):
 
 def main():
     data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English"
-    reader = Conll2009DatasetReader(data_folder = data_folder,read_frame_new=True)
+  #  reader = Conll2009DatasetReader(data_folder = data_folder,read_frame_new=True)
 
-    train_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt")
-    dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt")
+  #  train_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-train.txt")
+  #  dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-English-development.txt")
 
-    reader.save_frames()
+  #  reader.save_frames()
 
     reader = Conll2009DatasetReader(data_folder = data_folder)
     dev_data = reader.read("/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt")

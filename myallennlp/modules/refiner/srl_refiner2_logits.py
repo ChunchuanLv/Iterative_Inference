@@ -20,7 +20,6 @@ from typing import List, Tuple, Dict
 from myallennlp.modules.refiner.mlp_forward_backward import MLPForwardBackward
 from myallennlp.modules.refiner.graph_auto_encoder import GraphAutoEncoder
 from myallennlp.modules.refiner.graph_auto_encoder2 import GraphAutoEncoder2
-from myallennlp.modules.refiner.graph_auto_encoder3 import GraphAutoEncoder3
 from myallennlp.modules.reparametrization.gumbel_softmax import hard, _sample_gumbel, inplace_masked_gumbel_softmax
 
 

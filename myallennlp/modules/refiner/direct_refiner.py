@@ -22,6 +22,7 @@ from myallennlp.modules.refiner.graph_auto_encoder import GraphAutoEncoder
 from myallennlp.modules.reparametrization.gumbel_softmax import hard, _sample_gumbel, inplace_masked_gumbel_softmax
 from myallennlp.modules.refiner.refiner import SRLRefiner
 
+from myallennlp.modules.sparsemax import sparse_max
 from torch.nn.modules import Linear
 @Seq2SeqEncoder.register("direct_refiner")
 class DirectSRLRefiner(SRLRefiner):
@@ -72,50 +73,42 @@ class DirectSRLRefiner(SRLRefiner):
 
 
 
-    def __init__(self,
-                 iterations: int = 1,
-                 dropout: float = 0.3,
-                 stright_through: bool = False,
-                 hidden_dim: int = 40,
-                 corruption_rate: float = 0.1,
-                 corruption_iterations: int = 1,
-                 testing_iterations: int = 5,
-                 gumbel_t: float = 0.0,
-                 weight_tie:bool=False,
-                 activation:str="sigmoid") -> None:
-        super(DirectSRLRefiner, self).__init__()
-        self.gumbel_t = gumbel_t
-        self.stright_through = stright_through
-        self.iterations = iterations
-        self.hidden_dim = hidden_dim
-        self._dropout = Dropout(dropout)
-        self.testing_iterations = testing_iterations
-        self.dropout = dropout
-        self.corruption_rate = corruption_rate
-        self._corrupt_mask = lambda x: torch.bernoulli(
-            x.data.new(x.data.size()[:-1]).fill_(1 - self.corruption_rate)).unsqueeze(-1)
-        self.corruption_iterations = corruption_iterations
-        self.weight_tie = weight_tie
-        self.activation =  Activation.by_name(activation)()
+
     def initialize_network(self, n_tags: int, sense_dim: int, rep_dim: int):
+        self.n_tags = n_tags
 
         self._arc_tag_arg_enc = Linear(rep_dim, self.hidden_dim)
-        self._arc_tag_predicate_enc = Linear(sense_dim, self.hidden_dim)
-        self._arc_tag_tags_enc = Linear(2*n_tags+1, self.hidden_dim)
 
+        if self.use_predicate_rep:
+            self._arc_tag_pred_enc = Linear(rep_dim, self.hidden_dim)
+
+        if self.graph_type != 2:
+            self._arc_tag_sense_enc = Linear(sense_dim, self.hidden_dim)
+
+        if self.graph_type == 1:
+            self._arc_tag_tags_enc = Linear(n_tags+1, self.hidden_dim)
+        elif self.graph_type == 2:
+            self._arc_tag_tags_enc = Linear(n_tags+1, self.hidden_dim)
+        else:
+            self._arc_tag_tags_enc = Linear(2*n_tags+1, self.hidden_dim)
 
         if self.weight_tie:
             self.arc_tag_refiner = lambda x: x.matmul(self._arc_tag_tags_enc.weight[:,:n_tags+1])
 
-            self.predicate_linear = Linear(rep_dim+n_tags+sense_dim,self.hidden_dim)
+            if self.graph_type != 2:
+                self.predicate_linear = Linear(rep_dim+n_tags+sense_dim,self.hidden_dim)
+            else:
+                self.predicate_linear = Linear(rep_dim+sense_dim,self.hidden_dim)
+
             self.predicte_refiner = lambda x: self._dropout(self.activation(self.predicate_linear(x)))\
-                .matmul(self.predicate_linear.weight[:,:sense_dim])
+                    .matmul(self.predicate_linear.weight[:,:sense_dim])
         else:
             self.arc_tag_refiner =  FeedForward(self.hidden_dim,1,
                                                 n_tags+1,Activation.by_name("linear")(),dropout=self.dropout)
+
             self.predicte_refiner = FeedForward(rep_dim+n_tags+sense_dim, 2,
-                    [self.hidden_dim]+[sense_dim],
-                    [self.activation]+[Activation.by_name("linear")()],dropout=self.dropout)
+                [self.hidden_dim]+[sense_dim],
+                [self.activation]+[Activation.by_name("linear")()],dropout=self.dropout)
     @overrides
     def get_input_dim(self) -> int:
         return self._input_dim
@@ -138,17 +131,28 @@ class DirectSRLRefiner(SRLRefiner):
                       sense_mask,
                       predicate_mask,
                       arc_tag_probs,
-                      sense_probs):
+                      sense_probs,
+                      soft_tags,
+                      soft_index,
+                      step_size=1,
+                      sense_rep = None):
 
         all_edges = (arc_tag_probs * graph_mask).sum(1)
         all_active_edges = all_edges[:, :, 1:]
 
         # shape (batch_size, predicates_len, node_dim)
-        predicate_emb = (sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
-            2) * predicate_mask.unsqueeze(-1)
+        predicate_emb =  self._dropout((sense_probs.unsqueeze(2).matmul(embedded_candidate_preds)).squeeze(
+            2) * predicate_mask.unsqueeze(-1))
 
-        predicate_representation = self._dropout(
-            self.predicte_refiner(torch.cat([predicate_emb,predicate_rep,all_active_edges], dim=-1)))
+        if self.graph_type == 3:
+            predicate_representation = self._dropout(
+                self.predicte_refiner(torch.cat([predicate_rep,all_active_edges], dim=-1)))
+        elif self.graph_type == 2:
+            predicate_representation = self._dropout(
+                self.predicte_refiner(torch.cat([predicate_emb,predicate_rep], dim=-1)))
+        else :
+            predicate_representation = self._dropout(
+                self.predicte_refiner(torch.cat([predicate_emb,predicate_rep,all_active_edges], dim=-1)))
 
         # (batch_size, predicates_len, max_sense)
         sense_logits = embedded_candidate_preds.matmul(predicate_representation.unsqueeze(-1)).squeeze(-1)
@@ -158,30 +162,47 @@ class DirectSRLRefiner(SRLRefiner):
         all_other_edges = (all_edges.unsqueeze(1) - arc_tag_probs )* graph_mask
         all_other_edges = all_other_edges[:,:,:,1:]
 
-        encoded_text_enc = self._arc_tag_arg_enc(argument_rep)
-        predicate_emb_enc = self._arc_tag_predicate_enc(predicate_emb)
+        encoded_arg_enc = self._arc_tag_arg_enc(argument_rep)
 
-        tag_input_date = torch.cat([arc_tag_probs,all_other_edges ],dim=-1)
+        if self.use_predicate_rep:
+            encoded_pred_enc = self._arc_tag_pred_enc(predicate_rep)
+
+
+        if self.graph_type == 1:
+            tag_input_date = arc_tag_probs
+        elif self.graph_type == 2:
+            tag_input_date = arc_tag_probs
+        else:
+            tag_input_date = torch.cat([arc_tag_probs,all_other_edges ],dim=-1)
+
         tag_enc = self._arc_tag_tags_enc(tag_input_date)
 
-        linear_added = tag_enc + encoded_text_enc.unsqueeze(2).expand_as(tag_enc)+ predicate_emb_enc.unsqueeze(1).expand_as(tag_enc)
+        if self.use_predicate_rep:
+            linear_added = tag_enc + encoded_arg_enc.unsqueeze(2).expand_as(tag_enc) + encoded_pred_enc.unsqueeze(1).expand_as(tag_enc)
+        else:
+            linear_added = tag_enc + encoded_arg_enc.unsqueeze(2).expand_as(tag_enc)
 
-        arc_tag_logits = self.arc_tag_refiner(self.activation(self._dropout(linear_added)))
+        if self.graph_type != 2:
+            predicate_emb_enc = self._arc_tag_sense_enc(predicate_emb)
+            linear_added = linear_added + predicate_emb_enc.unsqueeze(1).expand_as(tag_enc)
+
+
+        arc_tag_logits = self.arc_tag_refiner(self._dropout(self.activation(linear_added)))
 
 
         sense_logits = sense_logits + input_sense_logits
         arc_tag_logits = arc_tag_logits + input_arc_tag_logits
 
-        if self.training:
-            arc_tag_logits = arc_tag_logits + self.gumbel_t * (
-                        _sample_gumbel(arc_tag_logits.size(), out=arc_tag_logits.new()))
-            sense_logits = sense_logits + self.gumbel_t * (
-                        _sample_gumbel(sense_logits.size(), out=sense_logits.new()) )
 
+        if self.training and self.gumbel_t:
+            arc_tag_logits = arc_tag_logits + self.gumbel_t * _sample_gumbel(arc_tag_logits.size(),
+                                                                             out=arc_tag_logits.new())
+            sense_logits = sense_logits + 5 * self.gumbel_t * _sample_gumbel(sense_logits.size(),
+                                                                         out=sense_logits.new())
+        if self.training and self.subtract_gold and soft_tags is not None:
+            arc_tag_logits = arc_tag_logits + self.subtract_gold * (- soft_tags)
+            sense_logits = sense_logits + self.subtract_gold * (- soft_index)
 
-        arc_tag_probs = torch.nn.functional.softmax(arc_tag_logits, dim=-1)*graph_mask
-        sense_probs = torch.nn.functional.softmax(sense_logits, dim=-1)*sense_mask
-
-
+        arc_tag_probs, sense_probs = self.decode(arc_tag_logits,sense_logits,graph_mask,sense_mask,soft_tags,soft_index,arc_tag_probs,sense_probs,step_size)
 
         return arc_tag_logits, arc_tag_probs, sense_logits, sense_probs, None, None

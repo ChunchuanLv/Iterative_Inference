@@ -4,9 +4,11 @@
     "filter": true,
     "data_folder": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/"
   },
+  "vocabulary":{
+    "directory_path":"../Iterative_Inference_Models/zh_vocabulary"
+  },
   "train_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-Chinese-train.txt",
   "validation_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-Chinese-development.txt",
-  "test_data_path": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-evaluation-Chinese.txt",
   "iterator": {
     "type": "bucket",
     "batch_size": 64,
@@ -18,32 +20,36 @@
     ]
   },
   "model": {
-    "type": "srl_graph_parser_refine_direct3",
-    "base_model_archive": "base_zh_model.tar.gz",
+    "type": "srl_graph_parser_refine",
+    "base_model_archive": "../Iterative_Inference_Models/base_zh_model.tar.gz",
     "dropout": 0.3,
-    "encoder": {
-      "type": "stacked_bidirectional_lstm",
-      "hidden_size": 428,
-      "input_size": 428,
-      "num_layers": 3,
-      "recurrent_dropout_probability": 0.3,
-      "use_highway": true
-    },
-    "hidden_dim":200,
-    "rep_dim":428,
-    "refine_epoch":2,
-    "testing_ecpoh":3,
-    "hiddne_layers":1,
-    "gumbel_t":1,
-    "weight_tie":false,
-    "straight_through":false,
-    "activation":"sigmoid",
-    "add_logits":true,
-    "denoise_iterations":1,
-    "add_predicate_emb":true,
-    "corruption_rate":0.2,
-    "re_estimate_logits":false,
-    "finetune": "no",
+      "encoder": {
+        "type": "stacked_bidirectional_lstm",
+        "input_size": 428,
+        "hidden_size": 428,
+        "num_layers": 3,
+        "recurrent_dropout_probability": 0.3,
+        "use_highway": true
+      },
+      "refiner": {
+        "type": "direct_refiner",
+        "iterations": 2,
+        "testing_iterations":4,
+        "corruption_iterations":0,
+        "dropout": 0.3,
+        "stright_through": false,
+        "hidden_dim": 200,
+        "corruption_rate": 0.2,
+        "gumbel_t": 5.0,
+        "sense_gumbel_t":50,
+        "subtract_gold":1.0,
+        "graph_type":2,
+        "weight_tie":true,
+        "use_predicate_rep":true
+      },
+    "rep_dim":200,
+    "train_score":0,
+    "delta_type":"theory",
     "initializer": [
       [
         ".*feedforward.*weight",
@@ -95,19 +101,20 @@
       ]
     ],
   },
-  "trainer": {
-    "cuda_device":3,
+ "trainer": {
+    "cuda_device": 1,
     "grad_norm": 5,
-    "num_epochs": 600,
+    "num_epochs": 300,
+    "num_serialized_models_to_keep":5,
     "optimizer": {
       "type": "dense_sparse_adam",
+      "lr":3e-4,
       "betas": [
         0.9,
         0.9
       ]
     },
-    "patience": 200,
+    "patience": 600,
     "validation_metric": "+F_2"
-  },
-  "evaluate_on_test": true
+  }
 }

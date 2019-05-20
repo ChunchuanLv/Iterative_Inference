@@ -45,7 +45,9 @@ class ComputationNode(object):
         if not self.requires_grad: return {}
 
         assert self.states is not None
-       # print ("backwarding ",self.output_name,self.states)
+     #   print ("backwarding ",self.output_name,self.states)
+    #    print ("grad_output ",grad_output.size())
+    #    for s in self.states: print (s.size())
         grad_inputs = self.backward_f(grad_output, *self.states)
 
         if isinstance(grad_inputs,List) is False: grad_inputs = [grad_inputs]
