@@ -28,31 +28,15 @@ print(__doc__)
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
+font = {'family' : "Times New Roman",
+        'weight' : 'bold',
+        'size'   : 12}
+matplotlib.rc('font', **font)
 
-from sklearn import svm, datasets
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix
-from sklearn.utils.multiclass import unique_labels
+if __name__ == "__main__":
 
-# import some data to play with
-iris = datasets.load_iris()
-X = iris.data
-y = iris.target
-class_names = iris.target_names
-
-# Split the data into a training set and a test set
-X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=0)
-
-# Run classifier, using a model that is too regularized (C too low) to see
-# the impact on the results
-classifier = svm.SVC(kernel='linear', C=0.01)
-y_pred = classifier.fit(X_train, y_train).predict(X_test)
-
-
-def plot_confusion_matrix(y_true, y_pred, classes,
-                          normalize=False,
-                          title=None,
-                          cmap=plt.cm.Blues):
+    cmap=plt.cm.Blues
     """
     This function prints and plots the confusion matrix.
     Normalization can be applied by setting `normalize=True`.
@@ -89,7 +73,7 @@ def plot_confusion_matrix(y_true, y_pred, classes,
   #  plt.setp(ax1.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
 
     # Loop over data dimensions and create text annotations.
-    fmt = '.2f' if normalize else 'd'
+    fmt =  'd'
     thresh = cm1.max() / 2.
     for i in range(cm1.shape[0]):
         for j in range(cm1.shape[1]):
@@ -98,7 +82,7 @@ def plot_confusion_matrix(y_true, y_pred, classes,
                     color="white" if cm1[i, j] > thresh else "black")
 
     # Loop over data dimensions and create text annotations.
-    fmt = '.2f' if normalize else 'd'
+    fmt =  'd'
     thresh = cm2.max() / 2.
     for i in range(cm2.shape[0]):
         for j in range(cm2.shape[1]):
@@ -106,14 +90,11 @@ def plot_confusion_matrix(y_true, y_pred, classes,
                      ha="center", va="center",
                      color="white" if cm2[i, j] > thresh else "black")
     fig.tight_layout()
-    return ax1
+   # fig.savefig("matrix.pdf", bbox_inches='tight')
 
 
-np.set_printoptions(precision=2)
-
-# Plot non-normalized confusion matrix
-plot_confusion_matrix(y_test, y_pred, classes=class_names,
-                      title='Confusion matrix, without normalization')
+    np.set_printoptions(precision=2)
 
 
-plt.show()
+
+    plt.show()

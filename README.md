@@ -23,7 +23,7 @@ allennlp predict /disk/scratch1/s1544871/srl/exps/direct_en_tie_2/model.tar.gz \
 --batch-size 128   --use-dataset-reader --include-package myallennlp --predictor dependency_srl 
 
 Test set:
-allennlp predict /disk/scratch1/s1544871/srl/exps/direct_en_tie_2/model.tar.gz \
+allennlp predict  /disk/scratch1/s1544871/srl/exps/direct_en_2_large/model.tar.gz \
 /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt \
 --batch-size 128   --cuda-device 1 --use-dataset-reader --include-package myallennlp --predictor dependency_srl 
 
@@ -65,7 +65,7 @@ TEST SET:
 perl eval09.pl -g /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt  \
  -s /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.predict -q
 perl eval09.pl -g /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.txt  \
- -s /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.predict1 -q
+ -s /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.predict2 -q
  
 perl eval09.pl -g /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-evaluation-Chinese.txt  \
  -s /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-Chinese/CoNLL2009-ST-evaluation-Chinese.predict -q

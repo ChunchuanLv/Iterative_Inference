@@ -155,11 +155,11 @@ class Conll2009DatasetReader(DatasetReader):
    #     print ("reading", file_path)
         with open(file_path) as sdp_file:
             return lazy_parse(sdp_file.read())
-
+#and x in ["A0","A1","A2","A3","A4","A5","AA"]
 def anydup(thelist):
     seen = set()
     for x in thelist:
-        if x in seen and x in ["A0","A1","A2","A3","A4","A5"]: return x
+        if x in seen and x in ["A0","A1","A2","A3","A4","A5","AA"]: return x
         seen.add(x)
     return None
 
@@ -177,6 +177,7 @@ def any_ref_vio(thelist):
     for x in thelist:
         if "R-" in x and x[2:] not in seen: return x
     return None
+
 def check_constraints(data):
     unique_violated = {}
     continuation = {}
@@ -250,6 +251,7 @@ def check_file(file,data):
 
                 return unique_violated, continuation
 def main():
+
     data_folder = "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/english_test_best/"
     gold_file = data_folder+"CoNLL2009-ST-evaluation-English.txt"
     base_file = data_folder+"CoNLL2009-ST-evaluation-English.predict"
@@ -259,6 +261,7 @@ def main():
     gold_file = data_folder+"CoNLL2009-ST-English-development.txt"
     base_file = data_folder+"CoNLL2009-ST-English-development.predict"
     refined_file = data_folder+"CoNLL2009-ST-English-development.predict2"
+
 
     def arg_errors():
         errors = {}  # arg -> base_arg -> int
