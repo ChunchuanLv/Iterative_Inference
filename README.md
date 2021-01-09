@@ -2,6 +2,7 @@
 
 This repository contains code for training semantic role labeling model described in:
 [Semantic Role Labeling with Iterative Structure Refinement](https://www.aclweb.org/anthology/D19-1099.pdf)
+
 We use English as example, other languages have similar configuration.
 
 If you use our code, please cite our paper as follows:  
@@ -22,15 +23,19 @@ If you use our code, please cite our paper as follows:
 
 ## Training:
 Train baseline model
+
 `allennlp train exps/srl2009_base.json --include-package myallennlp --serialization-dir  ../Iterative_Inference_Models/en_base`
+
 Move out model file and vocabulary file for building refiner:
+
 `cp ../Iterative_Inference_Models/en_base/model.tar.gz ../Iterative_Inference_Models/base_en_model.tar.gz`
 `cp -r ../Iterative_Inference_Models/en_base/vocabulary ../Iterative_Inference_Models/en_vocabulary`
+
 Train refiner
+
 `allennlp train exps/srl2009.json --include-package myallennlp --serialization-dir  ../Iterative_Inference_Models/refine`
 
-## Testing
-Annotate 
+## Testing 
 `allennlp predict  ../Iterative_Inference_Models/refine/model.tar.gz [../CoNLL2009-ST-evaluation-English.txt] --batch-size 128   --cuda-device 0 --use-dataset-reader --include-package myallennlp --predictor dependency_srl`
 
 ## Evaluation
@@ -44,6 +49,4 @@ https://ufal.mff.cuni.cz/conll2009-st/scorer.html
 
 ## Contact
 Contact (chunchuan.lv@gmail.com) if you have any questions!
-
- -s /afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/english_records_best/CoNLL2009-ST-evaluation-English.predict0 -q
  
