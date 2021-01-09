@@ -15,7 +15,7 @@
             "tokens": {
                 "type": "embedding",
                 "embedding_dim": 300,
-                "pretrained_file": "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/embeddings/data/cc.ca.300.vec.gz",
+                "pretrained_file": "https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.ca.300.bin.gz",
                 "sparse": true,
                 "trainable": true
             }

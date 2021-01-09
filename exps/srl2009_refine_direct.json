@@ -51,7 +51,6 @@
       },
     "rep_dim":300,
     "train_score":0,
-    "delta_type":"theory",
     "initializer": [
       [
         ".*feedforward.*weight",

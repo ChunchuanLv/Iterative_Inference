@@ -372,64 +372,6 @@ class SRLGraphParserBase(Model):
                                            sense_indexes).unsqueeze(-1) * sense_mask
 
             return (delta_tag.sum() + delta_sense.sum() )/ valid_positions # + arc_nll
-        elif self.delta_type == "theory2":
-
-            delta_tag = self._tag_loss(torch.nn.functional.log_softmax(arc_tag_logits, dim=-1).permute(0, 3, 1, 2),
-                                       arc_tags + 1).unsqueeze(-1) * graph_mask
-            delta_sense = self._sense_loss(torch.nn.functional.log_softmax(sense_logits, dim=-1).permute(0, 2, 1),
-                                           sense_indexes).unsqueeze(-1) * sense_mask
-            reg = self.r_lambda* (torch.sum(torch.abs(arc_tag_logits)* graph_mask) + torch.sum(torch.abs(sense_logits)* sense_mask))
-            return (delta_tag.sum() + delta_sense.sum() + reg)/ valid_positions # + arc_nll
-        elif self.delta_type == "theory3":
-
-            delta_tag = self._tag_loss(torch.nn.functional.log_softmax(arc_tag_logits, dim=-1).permute(0, 3, 1, 2),
-                                       arc_tags + 1).unsqueeze(-1) * graph_mask
-            delta_sense = self._sense_loss(torch.nn.functional.log_softmax(sense_logits, dim=-1).permute(0, 2, 1),
-                                           sense_indexes).unsqueeze(-1) * sense_mask
-            reg = self.r_lambda* (torch.sum(arc_tag_logits * arc_tag_logits* graph_mask) + torch.sum(sense_logits * sense_logits * sense_mask))
-            return (delta_tag.sum() + delta_sense.sum() + reg)/ valid_positions # + arc_nll
-        elif self.delta_type == "theory4":
-
-            delta_tag = self._tag_loss(torch.nn.functional.log_softmax(arc_tag_logits, dim=-1).permute(0, 3, 1, 2),
-                                       arc_tags + 1).unsqueeze(-1) * graph_mask
-            delta_sense = self._sense_loss(torch.nn.functional.log_softmax(sense_logits, dim=-1).permute(0, 2, 1),
-                                           sense_indexes).unsqueeze(-1) * sense_mask
-            reg = self.r_lambda* (torch.sum(torch.abs(arc_tag_logits)*soft_tags* graph_mask) + torch.sum(torch.abs(sense_logits)*soft_index* sense_mask))
-            return (delta_tag.sum() + delta_sense.sum() + reg)/ valid_positions # + arc_nll
-        elif self.delta_type == "rec":
-
-            delta_tag = self._tag_loss(torch.nn.functional.log_softmax(arc_tag_logits, dim=-1).permute(0, 3, 1, 2),
-                                       arc_tags + 1).unsqueeze(-1) * graph_mask
-            delta_sense = self._sense_loss(torch.nn.functional.log_softmax(sense_logits, dim=-1).permute(0, 2, 1),
-                                           sense_indexes).unsqueeze(-1) * sense_mask
-
-
-            tag_nll = torch.clamp(((-soft_tags + arc_tag_probs) * arc_tag_logits + delta_tag) * graph_mask,
-                                  min=0).sum() / valid_positions
-
-            sense_nll = torch.clamp(((-soft_index + sense_probs) * sense_logits + delta_sense) * sense_mask,
-                                    min=0).sum() / valid_positions
-            nll = sense_nll + tag_nll
-
-            return nll
-        elif  self.delta_type == "no_margin":
-            tag_nll = ((torch.clamp((-soft_tags + arc_tag_probs) * arc_tag_logits ,
-                                    min=0) + delta_tag) * graph_mask).sum() / valid_positions
-
-            sense_nll = ((torch.clamp((-soft_index + sense_probs) * sense_logits ,
-                                      min=0) + delta_sense) * sense_mask).sum() / valid_positions
-
-            return sense_nll + tag_nll
-        elif self.delta_type == "hinge":
-
-            tag_nll = torch.clamp(((-soft_tags + arc_tag_probs) * arc_tag_logits + 1) * graph_mask,
-                                  min=0).sum() / valid_positions
-
-            sense_nll = torch.clamp(((-soft_index + sense_probs) * sense_logits + 1) * sense_mask,
-                                    min=0).sum() / valid_positions
-            nll = sense_nll + tag_nll
-
-            return nll
         elif self.delta_type == "hinge_ce":
 
             tag_nll = ((torch.clamp((-soft_tags + arc_tag_probs) * arc_tag_logits + 1 ,
@@ -440,8 +382,6 @@ class SRLGraphParserBase(Model):
             nll = sense_nll + tag_nll
 
             return nll
-        else:
-            assert False
 
     @staticmethod
     def _greedy_decode(arc_tag_logits: torch.Tensor,

@@ -26,7 +26,7 @@ class Conll2009_PredictorBase(Predictor): #CoNLL2009-ST-evaluation-English  CoNL
             self.set_files(output_file_path)
 
     def set_files(self,output_file_path=
-                 "/afs/inf.ed.ac.uk/user/s15/s1544871/Data/2009_conll_p2/data/CoNLL2009-ST-English/CoNLL2009-ST-evaluation-English.predict"):
+                 "../Iterative_Inference_Models/refine/CoNLL2009-ST-evaluation-English.predict"):
 
         self.conll_format_file_path = output_file_path
 
